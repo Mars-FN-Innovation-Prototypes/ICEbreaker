@@ -44,6 +44,12 @@ const roleCopy = {
   Reviewer: { eyebrow: "Review queue", title: "Review the right evidence, right on time.", body: "Prioritized submissions with context, history and clear next actions." },
 };
 
+const navCopy = {
+  "My work": { eyebrow: "My work", title: "Own the work. Keep evidence moving.", body: "A focused queue for execution, evidence, review and the support you need to finish well." },
+  "Controls library": { eyebrow: "Controls library", title: "Find the control. Understand what good looks like.", body: "Explore the ICE framework, best-practice guidance and examples of previously accepted evidence." },
+  "Audit center": { eyebrow: "Audit center", title: "Turn audit requests into a few confident clicks.", body: "Package complete evidence, track requests and retrieve control history without the email chase." },
+} as const;
+
 export default function Home() {
   const [role, setRole] = useState<keyof typeof roleCopy>("Controller");
   const [activeNav, setActiveNav] = useState("Control tower");
@@ -59,7 +65,7 @@ export default function Home() {
     });
   }, [query, attentionOnly]);
 
-  const copy = roleCopy[role];
+  const copy = activeNav === "Control tower" ? roleCopy[role] : navCopy[activeNav as keyof typeof navCopy];
 
   return (
     <div className="app-shell">
@@ -128,7 +134,31 @@ export default function Home() {
             <span>Because in the world we want tomorrow, every risk gets the right attention at the right time.</span>
           </section>
 
-          <section className="metrics" aria-label="Control health summary">
+          {activeNav === "My work" && <section className="workspace-view" aria-label="My work dashboard">
+            <div className="view-metrics">
+              {[['Due today', '2', 'One needs evidence'], ['Ready for review', '3', 'Oldest waiting 1.2 days'], ['Guidance requested', '1', 'Controller response pending'], ['Completed this period', '24', '96% on time']].map(([label, value, note]) => <article key={label}><span>{label}</span><strong>{value}</strong><small>{note}</small></article>)}
+            </div>
+            <div className="view-grid">
+              <article className="panel view-panel"><div className="panel-heading"><div><span className="section-kicker">Prioritized queue</span><h2>Your next best actions</h2></div><span className="count-badge">6 open</span></div>
+                {controls.slice(0, 4).map((control, index) => <button className="work-item" key={control.id} onClick={() => setSelected(control)}><span className={`work-order ${index < 2 ? 'urgent' : ''}`}>{index + 1}</span><span><strong>{control.name}</strong><small>{control.id} · {control.due} · {control.evidence ? `${control.evidence} evidence files` : 'Evidence missing'}</small></span><span className={`status ${statusClass[control.status]}`}><i />{control.status}</span><b>›</b></button>)}
+              </article>
+              <article className="panel view-panel"><div className="panel-heading"><div><span className="section-kicker">This period</span><h2>Execution journey</h2></div></div><div className="journey"><div className="done"><i>✓</i><span><strong>Ownership certified</strong><small>31 of 31 controls</small></span></div><div className="current"><i>2</i><span><strong>Execute & upload</strong><small>6 controls still active</small></span></div><div><i>3</i><span><strong>Review & close</strong><small>3 submissions waiting</small></span></div></div><button className="support-card"><span>?</span><span><strong>Need help with a control?</strong><small>Connect with the relevant controllership team.</small></span><b>Ask for guidance →</b></button></article>
+            </div>
+          </section>}
+
+          {activeNav === "Controls library" && <section className="workspace-view" aria-label="Controls library">
+            <div className="view-metrics"><article><span>Controls in framework</span><strong>31</strong><small>16 key controls</small></article><article><span>IT-dependent</span><strong>19</strong><small>Across 8 processes</small></article><article><span>Guidance available</span><strong>100%</strong><small>Reviewed June 2026</small></article><article><span>Evidence examples</span><strong>86</strong><small>Approved prior-period files</small></article></div>
+            <div className="category-grid">{[['Period End','11','Close, analysis and reporting'],['Journal Entries','5','Creation, approval and posting'],['Balance Sheet','4','Reconciliations and substantiation'],['Master Data','3','Creation and maintenance']].map(([name,count,note]) => <button key={name}><span className="category-count">{count}</span><span><strong>{name}</strong><small>{note}</small></span><b>Explore →</b></button>)}</div>
+            <article className="panel library-panel"><div className="panel-heading"><div><span className="section-kicker">ICE framework</span><h2>Featured controls & guidance</h2></div><button className="text-button">Browse all 31 →</button></div><div className="library-list">{filtered.slice(0, 6).map(control => <button key={control.id} onClick={() => setSelected(control)}><span className="library-id">{control.id}</span><span><strong>{control.name}</strong><small>{control.process} · {control.type}</small></span><span className="guidance-ready">✓ Guidance</span><b>›</b></button>)}</div></article>
+          </section>}
+
+          {activeNav === "Audit center" && <section className="workspace-view" aria-label="Audit center">
+            <div className="view-metrics"><article><span>Evidence completeness</span><strong>90%</strong><small>↑ 8% this period</small></article><article><span>Ready packages</span><strong>12</strong><small>Self-service enabled</small></article><article><span>Open requests</span><strong>3</strong><small>One due this week</small></article><article><span>Average retrieval</span><strong>&lt;2m</strong><small>Down from 4.5 days</small></article></div>
+            <div className="view-grid audit-grid"><article className="panel view-panel"><div className="panel-heading"><div><span className="section-kicker">Evidence packages</span><h2>Audit-ready by design</h2></div><button className="text-button">Create package +</button></div>{[['Q2 Key Controls','16 controls','Ready to share'],['July Period End','9 controls','2 files missing'],['FY26 SoD Review','3 controls','In preparation']].map(([name,count,status], index) => <button className="package-item" key={name}><span className={`package-icon p${index}`}>▣</span><span><strong>{name}</strong><small>{count} · Updated today</small></span><span className={index === 0 ? 'package-ready' : 'package-progress'}>{status}</span><b>›</b></button>)}</article>
+              <article className="panel view-panel"><div className="panel-heading"><div><span className="section-kicker orange-text">Open requests</span><h2>Auditor request tracker</h2></div><span className="count-badge">3 requests</span></div><div className="request-card"><span>REQ-026</span><strong>Balance sheet reconciliation sample</strong><small>Due Jul 18 · External Audit</small><div><i style={{width:'75%'}} /><b>75%</b></div></div><div className="request-card"><span>REQ-031</span><strong>Journal approval evidence</strong><small>Due Jul 24 · Internal Audit</small><div><i style={{width:'40%'}} /><b>40%</b></div></div></article></div>
+          </section>}
+
+          {activeNav === "Control tower" && <><section className="metrics" aria-label="Control health summary">
             <article><div className="metric-icon blue">▦</div><div><span>Controls in scope</span><strong>31</strong><small>16 key controls</small></div></article>
             <article><div className="metric-icon green">✓</div><div><span>On-time execution</span><strong>84%</strong><small className="up">↑ 6% vs. last period</small></div></article>
             <article><div className="metric-icon orange">!</div><div><span>Need attention</span><strong>6</strong><small>3 missing evidence</small></div></article>
@@ -161,7 +191,7 @@ export default function Home() {
               <button className="attention-item" onClick={() => setSelected(controls[4])}><span className="alert-icon warning-bg">?</span><span><strong>Preparer asked for guidance</strong><small>GA.IC.01 · Asia · Intercompany</small></span><b>›</b></button>
               <button className="attention-cta" onClick={() => setAttentionOnly(!attentionOnly)}>{attentionOnly ? "Show all controls" : "Open gap triage"}<span>→</span></button>
             </article>
-          </section>
+          </section></>}
 
           <section className="panel controls-panel">
             <div className="panel-heading controls-heading">
