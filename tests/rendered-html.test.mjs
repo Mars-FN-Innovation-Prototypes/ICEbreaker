@@ -32,7 +32,7 @@ test("server-renders the scalable ICEbreaker control tower", async () => {
 
 test("keeps the MVP accessible, functional and brand-aligned", async () => {
   const [page, layout, css, packageJson] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/icebreaker-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -40,12 +40,17 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
 
   assert.match(page, /aria-label="Primary navigation"/);
   assert.match(page, /aria-label="Control detail panel"/);
-  assert.match(page, /My certifications/);
+  assert.match(page, /My controls/);
+  assert.match(page, /Control Owner/);
   assert.match(page, /Admin setup/);
   assert.match(page, /Download CSV/);
   assert.match(page, /I confirm and accept ownership/);
   assert.match(page, /Desktop procedure/);
   assert.match(page, /Simulated reminder/);
+  assert.match(page, /Help center & 101/);
+  assert.match(page, /Leadership.*Site owners.*Controllers/s);
+  assert.match(page, /ICEbreaker-101\.docx/);
+  assert.doesNotMatch(page, /Petcare|Snacking|\bCertifier\b/);
   assert.match(page, /localStorage/);
   assert.match(page, /importCsv/);
   assert.match(page, /updateControl/);

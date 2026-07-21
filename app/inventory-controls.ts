@@ -85,7 +85,7 @@ export const inventoryControls: InventoryControl[] = controlRows.map(([id, name,
   due: "Not scheduled",
   dtpStatus: "Not added",
   region: "Europe",
-  unit: "Not configured",
+  unit: "Food & Nutrition",
   instructions: "",
 }));
 
