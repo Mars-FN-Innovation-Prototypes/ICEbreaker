@@ -11,7 +11,7 @@
     "name": "rolldown-runtime"
   },
   "app/icebreaker-app.tsx": {
-    "file": "assets/icebreaker-app-BWM_UGGh.js",
+    "file": "assets/icebreaker-app-XaKHpPE-.js",
     "name": "icebreaker-app",
     "src": "app/icebreaker-app.tsx",
     "isDynamicEntry": true,
@@ -21,7 +21,7 @@
     ]
   },
   "node_modules/vinext/dist/shims/layout-segment-context.js": {
-    "file": "assets/layout-segment-context-J-FT37l9.js",
+    "file": "assets/layout-segment-context-BZkwTrcz.js",
     "name": "layout-segment-context",
     "src": "node_modules/vinext/dist/shims/layout-segment-context.js",
     "isDynamicEntry": true,
@@ -32,7 +32,7 @@
     ]
   },
   "virtual:vinext-app-browser-entry": {
-    "file": "assets/index-DTHnhT-n.js",
+    "file": "assets/index-aQlr9hfh.js",
     "name": "index",
     "src": "virtual:vinext-app-browser-entry",
     "isEntry": true,
