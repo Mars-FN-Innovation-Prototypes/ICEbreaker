@@ -10,10 +10,10 @@
     "file": "assets/rolldown-runtime-S-ySWqyJ.js",
     "name": "rolldown-runtime"
   },
-  "app/page.tsx": {
-    "file": "assets/page-D3UZS66r.js",
-    "name": "page",
-    "src": "app/page.tsx",
+  "app/icebreaker-app.tsx": {
+    "file": "assets/icebreaker-app-BWM_UGGh.js",
+    "name": "icebreaker-app",
+    "src": "app/icebreaker-app.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_rolldown-runtime-S-ySWqyJ.js",
@@ -21,7 +21,7 @@
     ]
   },
   "node_modules/vinext/dist/shims/layout-segment-context.js": {
-    "file": "assets/layout-segment-context-D5vkzCZe.js",
+    "file": "assets/layout-segment-context-J-FT37l9.js",
     "name": "layout-segment-context",
     "src": "node_modules/vinext/dist/shims/layout-segment-context.js",
     "isDynamicEntry": true,
@@ -32,7 +32,7 @@
     ]
   },
   "virtual:vinext-app-browser-entry": {
-    "file": "assets/index-BnSeJ0-T.js",
+    "file": "assets/index-DTHnhT-n.js",
     "name": "index",
     "src": "virtual:vinext-app-browser-entry",
     "isEntry": true,
@@ -41,9 +41,9 @@
       "_framework-CXnKph_e.js"
     ],
     "dynamicImports": [
+      "app/icebreaker-app.tsx",
       "node_modules/vinext/dist/shims/layout-segment-context.js",
-      "virtual:vinext-app-browser-entry",
-      "app/page.tsx"
+      "virtual:vinext-app-browser-entry"
     ]
   }
 }
