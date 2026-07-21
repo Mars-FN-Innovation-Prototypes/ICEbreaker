@@ -8,8 +8,12 @@ async function render() {
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("https://icebreaker.example/", { headers: { accept: "text/html" } }),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+    new Request("https://icebreaker.example/", {
+      headers: { accept: "text/html" },
+    }),
+    {
+      ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+    },
     { waitUntil() {}, passThroughOnException() {} },
   );
 }
@@ -27,7 +31,10 @@ test("server-renders the scalable ICEbreaker control tower", async () => {
   assert.match(html, /Needs your attention/);
   assert.match(html, /og:image/);
   assert.match(html, /https?:\/\/[^\"']+\/og\.png/);
-  assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
+  assert.doesNotMatch(
+    html,
+    /codex-preview|Your site is taking shape|react-loading-skeleton/i,
+  );
 });
 
 test("keeps the MVP accessible, functional and brand-aligned", async () => {
@@ -45,6 +52,11 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /Demo Account/);
   assert.match(page, /only assignable user in this MVP/);
   assert.match(page, /Active review & reporting cycle/);
+  assert.match(page, /icebreaker-scope/);
+  assert.match(page, /Sites & factories/);
+  assert.match(page, /Site \/ factory/);
+  assert.match(page, /Drives the Site owners report/);
+  assert.match(page, /site-readiness-table/);
   assert.doesNotMatch(page, /Change application role/);
   assert.doesNotMatch(page, /Erica Schmidt/);
   assert.match(page, /Admin setup/);
@@ -67,7 +79,10 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(css, /prefers-reduced-motion/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 
-  const inventory = await readFile(new URL("../app/inventory-controls.ts", import.meta.url), "utf8");
+  const inventory = await readFile(
+    new URL("../app/inventory-controls.ts", import.meta.url),
+    "utf8",
+  );
   assert.match(inventory, /INV\.PD\.01/);
   assert.doesNotMatch(inventory, /INV\.CT\.06|INV\.CT\.09/);
 });
