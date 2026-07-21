@@ -42,6 +42,11 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /aria-label="Control detail panel"/);
   assert.match(page, /My controls/);
   assert.match(page, /Control Owner/);
+  assert.match(page, /Demo Account/);
+  assert.match(page, /only assignable user in this MVP/);
+  assert.match(page, /Active review & reporting cycle/);
+  assert.doesNotMatch(page, /Change application role/);
+  assert.doesNotMatch(page, /Erica Schmidt/);
   assert.match(page, /Admin setup/);
   assert.match(page, /Download CSV/);
   assert.match(page, /I confirm and accept ownership/);
