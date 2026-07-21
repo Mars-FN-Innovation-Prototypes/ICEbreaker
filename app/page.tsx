@@ -1,243 +1,202 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { inventoryControls, processCounts, type ControlStatus, type InventoryControl } from "./inventory-controls";
 
-type Status = "On track" | "Ready for review" | "At risk" | "Overdue";
+type Nav = "Control tower" | "My certifications" | "Controls library" | "Reports" | "Admin setup";
+type Role = "Controller Admin" | "Certifier";
 
-type Control = {
-  id: string;
-  name: string;
-  process: string;
-  frequency: string;
-  status: Status;
-  owner: string;
-  reviewer: string;
-  region: string;
-  unit: string;
-  due: string;
-  evidence: number;
-  keyControl: boolean;
-  type: string;
+const statusClass: Record<ControlStatus, string> = {
+  Certified: "success",
+  "Due soon": "review",
+  "Evidence needed": "warning",
+  Overdue: "danger",
+  Unassigned: "neutral",
+  "Not started": "neutral",
 };
 
-const controls: Control[] = [
-  { id: "GA.BS.01", name: "Performance of Balance Sheet Account Reconciliations", process: "Balance Sheet Reconciliations", frequency: "Periodic", status: "Overdue", owner: "Ari Patel", reviewer: "MGSF Operations Manager", region: "Europe", unit: "Petcare", due: "Jul 14", evidence: 0, keyControl: true, type: "Manual with IT Dependency" },
-  { id: "GA.PE.02", name: "Review of Fluctuation Analysis", process: "Period End", frequency: "Periodic", status: "At risk", owner: "Nina Costa", reviewer: "S&F Head", region: "LATAM", unit: "Snacking", due: "Today", evidence: 1, keyControl: true, type: "Manual with IT Dependency" },
-  { id: "GA.JE.05", name: "Manual Journal Entry Approval", process: "Journal Entries", frequency: "Periodic", status: "Ready for review", owner: "Jordan Lee", reviewer: "S&F Head or Delegate", region: "North America", unit: "Food & Nutrition", due: "Jul 18", evidence: 3, keyControl: true, type: "Manual with IT Dependency" },
-  { id: "GA.PE.10", name: "Reporting Package Review", process: "Period End", frequency: "Quarterly", status: "On track", owner: "Sofia Martin", reviewer: "Business Unit Controller", region: "Europe", unit: "Snacking", due: "Jul 22", evidence: 2, keyControl: true, type: "Manual with IT Dependency" },
-  { id: "GA.IC.01", name: "Review of Intercompany Balances", process: "Intercompany", frequency: "Periodic", status: "At risk", owner: "Marcus Chen", reviewer: "MGSF Operations", region: "Asia", unit: "Petcare", due: "Jul 17", evidence: 0, keyControl: true, type: "Manual with IT Dependency" },
-  { id: "GA.SD.01", name: "Segregation of Duties Review (Business Unit)", process: "Segregation of Duties", frequency: "Semi-Annual", status: "On track", owner: "Priya Rao", reviewer: "Appropriate Associate", region: "Asia", unit: "Food & Nutrition", due: "Jul 29", evidence: 4, keyControl: true, type: "Manual" },
-  { id: "GA.MD.03", name: "Maintenance of General Accounting Master Data", process: "Master Data", frequency: "Annually", status: "Ready for review", owner: "Owen Brooks", reviewer: "Business Unit Controller", region: "North America", unit: "Petcare", due: "Jul 20", evidence: 2, keyControl: false, type: "Manual with IT Dependency" },
-  { id: "GA.PD.01", name: "Local process documentation and desktop procedures review", process: "Process Documentation", frequency: "Annually", status: "On track", owner: "Leila Haddad", reviewer: "Appropriate Associate", region: "MEA", unit: "Food & Nutrition", due: "Aug 02", evidence: 5, keyControl: true, type: "Manual" },
+const navCopy: Record<Nav, { eyebrow: string; title: string; body: string }> = {
+  "Control tower": { eyebrow: "Enterprise control health", title: "See risk sooner. Act before it grows.", body: "One live view of control ownership, execution and evidence across regions, units and business processes." },
+  "My certifications": { eyebrow: "My certifications", title: "Understand it. Own it. Certify it.", body: "A guided workspace for accepting ownership, following instructions and completing controls with confidence." },
+  "Controls library": { eyebrow: "ICE controls library", title: "Find the control. Understand what good looks like.", body: "Explore the control framework with configurable applicability, evidence requirements, guidance and desktop procedures." },
+  Reports: { eyebrow: "Reporting engine", title: "Shape the view around the decision.", body: "Filter, save and download the control insights each audience needs—without rebuilding the report." },
+  "Admin setup": { eyebrow: "Controller administration", title: "Configure the hub as the organization evolves.", body: "Manage scope, applicability, ownership, evidence, instructions and reminders without changing the application." },
+};
+
+const navItems: Array<[Nav, string]> = [
+  ["Control tower", "⌁"], ["My certifications", "✓"], ["Controls library", "▦"], ["Reports", "▤"], ["Admin setup", "⚙"],
 ];
 
-const statusClass: Record<Status, string> = {
-  "On track": "success",
-  "Ready for review": "review",
-  "At risk": "warning",
-  Overdue: "danger",
-};
-
-const roleCopy = {
-  Controller: { eyebrow: "Control tower", title: "See risk sooner. Act before it grows.", body: "A live view of control health across teams, regions and business units." },
-  Preparer: { eyebrow: "My control work", title: "Know what is due. Prove what is done.", body: "One guided workspace for instructions, evidence and ownership." },
-  Reviewer: { eyebrow: "Review queue", title: "Review the right evidence, right on time.", body: "Prioritized submissions with context, history and clear next actions." },
-};
-
-const navCopy = {
-  "My work": { eyebrow: "My work", title: "Own the work. Keep evidence moving.", body: "A focused queue for execution, evidence, review and the support you need to finish well." },
-  "Controls library": { eyebrow: "Controls library", title: "Find the control. Understand what good looks like.", body: "Explore the ICE framework, best-practice guidance and examples of previously accepted evidence." },
-  "Audit center": { eyebrow: "Audit center", title: "Turn audit requests into a few confident clicks.", body: "Package complete evidence, track requests and retrieve control history without the email chase." },
-} as const;
+function Metric({ label, value, note, tone = "blue" }: { label: string; value: string; note: string; tone?: string }) {
+  return <article><div className={`metric-icon ${tone}`}>{tone === "green" ? "✓" : tone === "orange" ? "!" : tone === "water" ? "⌁" : "▦"}</div><div><span>{label}</span><strong>{value}</strong><small>{note}</small></div></article>;
+}
 
 export default function Home() {
-  const [role, setRole] = useState<keyof typeof roleCopy>("Controller");
-  const [activeNav, setActiveNav] = useState("Control tower");
+  const [role, setRole] = useState<Role>("Controller Admin");
+  const [controls, setControls] = useState<InventoryControl[]>(inventoryControls);
+  const [activeNav, setActiveNav] = useState<Nav>("Control tower");
   const [query, setQuery] = useState("");
-  const [attentionOnly, setAttentionOnly] = useState(false);
-  const [selected, setSelected] = useState<Control | null>(null);
+  const [processFilter, setProcessFilter] = useState("All processes");
+  const [statusFilter, setStatusFilter] = useState("All statuses");
+  const [evidenceFilter, setEvidenceFilter] = useState("All evidence rules");
+  const [selected, setSelected] = useState<InventoryControl | null>(null);
+  const [accepted, setAccepted] = useState(false);
+  const [understood, setUnderstood] = useState(false);
+  const [performed, setPerformed] = useState(false);
+  const [toast, setToast] = useState("");
+  const [savedReports, setSavedReports] = useState(["Leadership control health", "Missing evidence", "Ownership gaps"]);
 
-  const filtered = useMemo(() => {
-    return controls.filter((control) => {
-      const matchesQuery = `${control.id} ${control.name} ${control.process} ${control.owner} ${control.region}`.toLowerCase().includes(query.toLowerCase());
-      const matchesAttention = !attentionOnly || control.status === "At risk" || control.status === "Overdue";
-      return matchesQuery && matchesAttention;
-    });
-  }, [query, attentionOnly]);
+  useEffect(() => {
+    const storedControls = window.localStorage.getItem("icebreaker-controls");
+    const storedReports = window.localStorage.getItem("icebreaker-reports");
+    if (storedControls) setControls(JSON.parse(storedControls));
+    if (storedReports) setSavedReports(JSON.parse(storedReports));
+  }, []);
 
-  const copy = activeNav === "Control tower" ? roleCopy[role] : navCopy[activeNav as keyof typeof navCopy];
+  useEffect(() => { window.localStorage.setItem("icebreaker-controls", JSON.stringify(controls)); }, [controls]);
+  useEffect(() => { window.localStorage.setItem("icebreaker-reports", JSON.stringify(savedReports)); }, [savedReports]);
 
-  return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-block">
-          <img className="brand-lockup" src="/brand/logo-lockup.png" alt="Mars Food & Nutrition" />
-          <div className="product-name"><span className="ice-dot" />ICEbreaker</div>
-          <p>Digitalized Controls Hub</p>
-        </div>
+  const filtered = useMemo(() => controls.filter((control) => {
+    const search = `${control.id} ${control.name} ${control.process} ${control.owner}`.toLowerCase();
+    return search.includes(query.toLowerCase())
+      && (processFilter === "All processes" || control.process === processFilter)
+      && (statusFilter === "All statuses" || control.status === statusFilter)
+      && (evidenceFilter === "All evidence rules" || (evidenceFilter === "Evidence required" ? control.evidenceRequired : !control.evidenceRequired));
+  }), [controls, query, processFilter, statusFilter, evidenceFilter]);
 
-        <nav aria-label="Primary navigation">
-          {[
-            ["Control tower", "⌁"],
-            ["My work", "✓"],
-            ["Controls library", "▦"],
-            ["Audit center", "◎"],
-          ].map(([item, icon]) => (
-            <button key={item} className={activeNav === item ? "nav-item active" : "nav-item"} onClick={() => setActiveNav(item)}>
-              <span aria-hidden="true">{icon}</span>{item}
-              {item === "My work" && <b>6</b>}
-            </button>
-          ))}
-        </nav>
+  const copy = navCopy[activeNav];
+  const openControl = (control: InventoryControl) => { setSelected(control); setAccepted(control.owner !== "Unassigned"); setUnderstood(false); setPerformed(false); };
+  const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(""), 2600); };
+  const updateControl = (id: string, updates: Partial<InventoryControl>) => setControls((current) => current.map((control) => control.id === id ? { ...control, ...updates } : control));
+  const downloadReport = () => {
+    const header = ["Control ID", "Control name", "Sub-process", "Frequency", "Key control", "Evidence required", "Owner", "Status", "Due"];
+    const rows = filtered.map((c) => [c.id, c.name, c.process, c.frequency, c.keyControl ? "Yes" : "No", c.evidenceRequired ? "Yes" : "No", c.owner, c.status, c.due]);
+    const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
+    const href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const link = document.createElement("a"); link.href = href; link.download = "ICEbreaker-controls-report.csv"; link.click(); URL.revokeObjectURL(href);
+    notify(`Downloaded ${filtered.length} controls`);
+  };
 
-        <div className="sidebar-spacer" />
-        <div className="purpose-card">
-          <img src="/brand/better-food-text.png" alt="Better food today. A better world tomorrow." />
-          <p>Controls that protect trust in every decision.</p>
-        </div>
-        <button className="profile-card" aria-label="Open user profile">
-          <span>ES</span><span><strong>Erica Schmidt</strong><small>Global Controller</small></span><i>•••</i>
-        </button>
-      </aside>
+  return <div className="app-shell">
+    <aside className="sidebar">
+      <div className="brand-block"><img className="brand-lockup" src="/brand/logo-lockup.png" alt="Mars Food & Nutrition" /><div className="product-name"><span className="ice-dot" />ICEbreaker</div><p>Digitalized Controls Hub</p></div>
+      <div className="pilot-pill"><span>ICE</span><div><strong>Controls workspace</strong><small>All regions · All processes</small></div></div>
+      <nav aria-label="Primary navigation">{navItems.map(([item, icon]) => <button key={item} className={activeNav === item ? "nav-item active" : "nav-item"} onClick={() => setActiveNav(item)}><span aria-hidden="true">{icon}</span>{item}{item === "My certifications" && <b>8</b>}</button>)}</nav>
+      <div className="sidebar-spacer" />
+      <div className="purpose-card"><img src="/brand/better-food-text.png" alt="Better food today. A better world tomorrow." /><p>Controls that protect trust in every decision.</p></div>
+      <button className="profile-card" aria-label="Open user profile" onClick={() => notify("Profile and access settings opened")}><span>ES</span><span><strong>Erica Schmidt</strong><small>{role}</small></span><i>•••</i></button>
+    </aside>
 
-      <main>
-        <header className="topbar">
-          <div className="mobile-brand">ICEbreaker</div>
-          <label className="global-search">
-            <span aria-hidden="true">⌕</span>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search controls, owners or IDs" aria-label="Search controls" />
-            <kbd>⌘ K</kbd>
-          </label>
-          <div className="header-actions">
-            <button className="icon-button" aria-label="Help">?</button>
-            <button className="icon-button notification" aria-label="Notifications">♢<span /></button>
-            <div className="role-switch" aria-label="Change prototype role">
-              {(["Controller", "Preparer", "Reviewer"] as const).map((item) => (
-                <button key={item} className={role === item ? "selected" : ""} onClick={() => setRole(item)}>{item}</button>
-              ))}
-            </div>
-          </div>
-        </header>
+    <main>
+      <header className="topbar"><div className="mobile-brand">ICEbreaker</div><label className="global-search"><span aria-hidden="true">⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search controls, owners or IDs" aria-label="Search controls" /><kbd>⌘ K</kbd></label><div className="header-actions"><button className="icon-button" aria-label="Help" onClick={() => notify("Help center opened")}>?</button><button className="icon-button notification" aria-label="Notifications" onClick={() => notify("No unread notifications")} >♢<span /></button><div className="role-switch" aria-label="Change application role">{(["Controller Admin", "Certifier"] as const).map((item) => <button key={item} className={role === item ? "selected" : ""} onClick={() => { setRole(item); setActiveNav(item === "Certifier" ? "My certifications" : "Control tower"); }}>{item}</button>)}</div></div></header>
 
-        <div className="content">
-          <section className="hero">
-            <div>
-              <div className="eyebrow"><span />{copy.eyebrow}</div>
-              <h1>{copy.title}</h1>
-              <p>{copy.body}</p>
-            </div>
-            <div className="hero-date"><span>Reporting period</span><strong>July 2026</strong><button aria-label="Change period">⌄</button></div>
-          </section>
+      <div className="content">
+        <section className="hero"><div><div className="eyebrow"><span />{copy.eyebrow}</div><h1>{copy.title}</h1><p>{copy.body}</p></div><label className="hero-date"><span>Certification period</span><select aria-label="Certification period"><option>July 2026</option><option>Q3 2026</option><option>FY 2026</option></select></label></section>
+        <section className="purpose-line"><strong>Today, we’re making control ownership clear.</strong><span>Because in the world we want tomorrow, every risk gets the right attention at the right time.</span></section>
 
-          <section className="purpose-line">
-            <strong>Today, we’re making control health visible.</strong>
-            <span>Because in the world we want tomorrow, every risk gets the right attention at the right time.</span>
-          </section>
+        {activeNav === "Control tower" && <ControlTowerMvp controls={controls} openControl={openControl} setActiveNav={setActiveNav} notify={notify} />}
+        {activeNav === "My certifications" && <CertificationsMvp controls={controls} openControl={openControl} setActiveNav={setActiveNav} />}
+        {activeNav === "Controls library" && <ControlsLibraryMvp filtered={filtered} processFilter={processFilter} setProcessFilter={setProcessFilter} evidenceFilter={evidenceFilter} setEvidenceFilter={setEvidenceFilter} openControl={openControl} downloadReport={downloadReport} />}
+        {activeNav === "Reports" && <ReportsMvp filtered={filtered} processFilter={processFilter} setProcessFilter={setProcessFilter} statusFilter={statusFilter} setStatusFilter={setStatusFilter} evidenceFilter={evidenceFilter} setEvidenceFilter={setEvidenceFilter} savedReports={savedReports} setSavedReports={setSavedReports} downloadReport={downloadReport} notify={notify} openControl={openControl} />}
+        {activeNav === "Admin setup" && <AdminSetupMvp controls={controls} setControls={setControls} updateControl={updateControl} notify={notify} openControl={openControl} setActiveNav={setActiveNav} />}
+      </div>
+    </main>
 
-          {activeNav === "My work" && <section className="workspace-view" aria-label="My work dashboard">
-            <div className="view-metrics">
-              {[['Due today', '2', 'One needs evidence'], ['Ready for review', '3', 'Oldest waiting 1.2 days'], ['Guidance requested', '1', 'Controller response pending'], ['Completed this period', '24', '96% on time']].map(([label, value, note]) => <article key={label}><span>{label}</span><strong>{value}</strong><small>{note}</small></article>)}
-            </div>
-            <div className="view-grid">
-              <article className="panel view-panel"><div className="panel-heading"><div><span className="section-kicker">Prioritized queue</span><h2>Your next best actions</h2></div><span className="count-badge">6 open</span></div>
-                {controls.slice(0, 4).map((control, index) => <button className="work-item" key={control.id} onClick={() => setSelected(control)}><span className={`work-order ${index < 2 ? 'urgent' : ''}`}>{index + 1}</span><span><strong>{control.name}</strong><small>{control.id} · {control.due} · {control.evidence ? `${control.evidence} evidence files` : 'Evidence missing'}</small></span><span className={`status ${statusClass[control.status]}`}><i />{control.status}</span><b>›</b></button>)}
-              </article>
-              <article className="panel view-panel"><div className="panel-heading"><div><span className="section-kicker">This period</span><h2>Execution journey</h2></div></div><div className="journey"><div className="done"><i>✓</i><span><strong>Ownership certified</strong><small>31 of 31 controls</small></span></div><div className="current"><i>2</i><span><strong>Execute & upload</strong><small>6 controls still active</small></span></div><div><i>3</i><span><strong>Review & close</strong><small>3 submissions waiting</small></span></div></div><button className="support-card"><span>?</span><span><strong>Need help with a control?</strong><small>Connect with the relevant controllership team.</small></span><b>Ask for guidance →</b></button></article>
-            </div>
-          </section>}
+    {toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}
+    {selected && <><button className="drawer-scrim" onClick={() => setSelected(null)} aria-label="Close control details" /><aside className="control-drawer" aria-label="Control detail panel">
+      <div className="drawer-header"><span className={`status ${statusClass[selected.status]}`}><i />{selected.status}</span><button onClick={() => setSelected(null)} aria-label="Close">×</button></div>
+      <div className="drawer-body"><span className="control-id">{selected.id}{selected.keyControl && <b>Key control</b>}</span><h2>{selected.name}</h2><p className="drawer-intro">Certify that you own and understand this control, complete it in line with the documented procedure, and attach evidence when required.</p>
+        <div className="detail-grid"><div><span>Sub-process</span><strong>{selected.process}</strong></div><div><span>Frequency</span><strong>{selected.frequency}</strong></div><div><span>Evidence</span><strong>{selected.evidenceRequired ? "Required" : "Certification only"}</strong></div><div><span>Control type</span><strong>{selected.type}</strong></div></div>
+        <section className="drawer-section"><div><span className="section-kicker">Required confirmations</span><h3>Certifier acknowledgement</h3></div><label className="check-card"><input type="checkbox" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} /><span><strong>I confirm and accept ownership</strong><small>I am responsible for certifying this control for the period.</small></span></label><label className="check-card"><input type="checkbox" checked={understood} onChange={(e) => setUnderstood(e.target.checked)} /><span><strong>I understand the control requirement</strong><small>I have reviewed the instructions and know what good looks like.</small></span></label><label className="check-card"><input type="checkbox" checked={performed} onChange={(e) => setPerformed(e.target.checked)} /><span><strong>The control was performed as documented</strong><small>Exceptions have been recorded and escalated where needed.</small></span></label></section>
+        <section className="drawer-section"><div><span className="section-kicker">Desktop procedure</span><h3>Local step-by-step guidance</h3></div><label className="guidance-card file-card"><span>▤</span><span><strong>{selected.dtpStatus === "Not added" ? "Add a desktop procedure" : `${selected.process} desktop procedure`}</strong><small>{selected.dtpStatus} · Upload or replace the local procedure</small></span><b>+</b><input type="file" onChange={(event) => { if (event.target.files?.[0]) { updateControl(selected.id, { dtpStatus: "Current" }); setSelected({ ...selected, dtpStatus: "Current" }); notify(`${event.target.files[0].name} attached`); } }} /></label><label className="guidance-card file-card"><span>▱</span><span><strong>{selected.evidenceRequired ? "Upload execution evidence" : "Evidence is optional"}</strong><small>{selected.evidenceRequired ? "PDF, Excel, image or supporting report" : "The Controller Admin can change this rule"}</small></span><b>+</b><input type="file" onChange={(event) => event.target.files?.[0] && notify(`${event.target.files[0].name} added as evidence`)} /></label></section>
+        <section className="drawer-section"><div><span className="section-kicker">Ownership</span><h3>People & support</h3></div><div className="people-row"><span className="avatar orange-avatar">{selected.owner === "Unassigned" ? "?" : selected.owner.split(" ").map((part) => part[0]).join("")}</span><span><small>Certifier</small><strong>{selected.owner}</strong></span><button onClick={() => notify("Use Controller Admin to reassign this control")}>Reassign</button></div><button className="handover-card" onClick={() => notify("Handover acknowledgement recorded")}>Reassignment requires confirmation that handover and training occurred <b>→</b></button></section>
+        {role === "Controller Admin" && <section className="drawer-section admin-editor"><div><span className="section-kicker">Controller Admin</span><h3>Control requirements</h3></div><label>Certifier<input value={selected.owner === "Unassigned" ? "" : selected.owner} placeholder="Enter certifier name" onChange={(event) => setSelected({ ...selected, owner: event.target.value || "Unassigned" })} /></label><label>Due date<input value={selected.due === "Not scheduled" ? "" : selected.due} type="date" onChange={(event) => setSelected({ ...selected, due: event.target.value || "Not scheduled" })} /></label><label className="admin-check"><input type="checkbox" checked={selected.evidenceRequired} onChange={(event) => setSelected({ ...selected, evidenceRequired: event.target.checked })} /> Evidence required</label><label>Instructions<textarea value={selected.instructions} placeholder="Add execution requirements, examples and instructions" onChange={(event) => setSelected({ ...selected, instructions: event.target.value })} /></label><button onClick={() => { const status: ControlStatus = selected.owner === "Unassigned" ? "Unassigned" : selected.status === "Unassigned" ? "Not started" : selected.status; updateControl(selected.id, { ...selected, status }); setSelected({ ...selected, status }); notify(`${selected.id} requirements saved`); }}>Save control requirements</button></section>}
+      </div>
+      <div className="drawer-footer"><button className="secondary-button" onClick={() => notify("Guidance request saved for the Controller team")}>Ask for guidance</button><button className="primary-button" disabled={role === "Controller Admin" || !accepted || !understood || !performed} onClick={() => { updateControl(selected.id, { status: "Certified", due: "Complete" }); notify(`${selected.id} certified`); setSelected(null); }}>{role === "Controller Admin" ? "Switch to Certifier" : "Certify control"}</button></div>
+    </aside></>}
+  </div>;
+}
 
-          {activeNav === "Controls library" && <section className="workspace-view" aria-label="Controls library">
-            <div className="view-metrics"><article><span>Controls in framework</span><strong>31</strong><small>16 key controls</small></article><article><span>IT-dependent</span><strong>19</strong><small>Across 8 processes</small></article><article><span>Guidance available</span><strong>100%</strong><small>Reviewed June 2026</small></article><article><span>Evidence examples</span><strong>86</strong><small>Approved prior-period files</small></article></div>
-            <div className="category-grid">{[['Period End','11','Close, analysis and reporting'],['Journal Entries','5','Creation, approval and posting'],['Balance Sheet','4','Reconciliations and substantiation'],['Master Data','3','Creation and maintenance']].map(([name,count,note]) => <button key={name}><span className="category-count">{count}</span><span><strong>{name}</strong><small>{note}</small></span><b>Explore →</b></button>)}</div>
-            <article className="panel library-panel"><div className="panel-heading"><div><span className="section-kicker">ICE framework</span><h2>Featured controls & guidance</h2></div><button className="text-button">Browse all 31 →</button></div><div className="library-list">{filtered.slice(0, 6).map(control => <button key={control.id} onClick={() => setSelected(control)}><span className="library-id">{control.id}</span><span><strong>{control.name}</strong><small>{control.process} · {control.type}</small></span><span className="guidance-ready">✓ Guidance</span><b>›</b></button>)}</div></article>
-          </section>}
+function ControlTowerMvp({ controls, openControl, setActiveNav, notify }: { controls: InventoryControl[]; openControl: (c: InventoryControl) => void; setActiveNav: (nav: Nav) => void; notify: (m: string) => void }) {
+  const assigned = controls.filter((control) => control.owner !== "Unassigned").length;
+  const certified = controls.filter((control) => control.status === "Certified").length;
+  const dtpReady = controls.filter((control) => control.dtpStatus === "Current").length;
+  const attention = controls.filter((control) => control.status !== "Certified").slice(0, 3);
+  const completion = controls.length ? Math.round((certified / controls.length) * 100) : 0;
+  return <><section className="metrics" aria-label="Control health summary"><Metric label="Controls in scope" value={`${controls.length}`} note="Current configured framework" /><Metric label="Ownership assigned" value={`${assigned}/${controls.length}`} note={assigned ? "Ready for acceptance" : "Begin in Admin setup"} tone="green" /><Metric label="Evidence required" value={`${controls.filter((c) => c.evidenceRequired).length}`} note="Controller-configurable rules" tone="orange" /><Metric label="DTP coverage" value={`${dtpReady}/${controls.length}`} note="Desktop procedures current" tone="water" /></section>
+    <section className="dashboard-grid"><article className="panel health-panel"><div className="panel-heading"><div><span className="section-kicker">Live control health</span><h2>Execution at a glance</h2></div><button className="text-button" onClick={() => setActiveNav("Reports")}>View report →</button></div><div className="health-content"><div className="donut" style={{ background: `conic-gradient(var(--pea) 0 ${completion}%, #e8e2dc ${completion}% 100%)` }} aria-label={`${completion} percent certified`}><div><strong>{completion}%</strong><span>certified</span></div></div><div className="legend"><div><span className="legend-dot on-track" /><span>Certified</span><strong>{certified}</strong></div><div><span className="legend-dot in-review" /><span>Not started</span><strong>{controls.filter((c) => c.status === "Not started").length}</strong></div><div><span className="legend-dot at-risk" /><span>Evidence gap</span><strong>{controls.filter((c) => c.status === "Evidence needed").length}</strong></div><div><span className="legend-dot overdue" /><span>Unassigned</span><strong>{controls.filter((c) => c.owner === "Unassigned").length}</strong></div></div><div className="setup-progress"><span className="section-kicker">MVP readiness</span><div><strong>1</strong><span>Configure organizational scope</span><button onClick={() => setActiveNav("Admin setup")}>Open setup</button></div><div><strong>2</strong><span>Assign certifiers and due rules</span><button onClick={() => setActiveNav("Admin setup")}>Assign</button></div><div><strong>3</strong><span>Launch certifications</span><button onClick={() => notify("Launch becomes available after ownership is configured")}>Review</button></div></div></div></article>
+      <article className="panel attention-panel"><div className="panel-heading"><div><span className="section-kicker orange-text">Prioritized</span><h2>Needs your attention</h2></div><span className="count-badge">{controls.filter((c) => c.status !== "Certified").length} items</span></div>{attention.map((control) => <button className="attention-item" key={control.id} onClick={() => openControl(control)}><span className="alert-icon warning-bg">?</span><span><strong>{control.status}</strong><small>{control.id} · {control.process} · {control.due}</small></span><b>›</b></button>)}<button className="attention-cta" onClick={() => setActiveNav("Admin setup")}>Complete control setup<span>→</span></button></article></section>
+    <ControlTableMvp controls={controls.slice(0, 8)} title="Controls ready for configuration" openControl={openControl} onExport={() => setActiveNav("Reports")} />
+  </>;
+}
 
-          {activeNav === "Audit center" && <section className="workspace-view" aria-label="Audit center">
-            <div className="view-metrics"><article><span>Evidence completeness</span><strong>90%</strong><small>↑ 8% this period</small></article><article><span>Ready packages</span><strong>12</strong><small>Self-service enabled</small></article><article><span>Open requests</span><strong>3</strong><small>One due this week</small></article><article><span>Average retrieval</span><strong>&lt;2m</strong><small>Down from 4.5 days</small></article></div>
-            <div className="view-grid audit-grid"><article className="panel view-panel"><div className="panel-heading"><div><span className="section-kicker">Evidence packages</span><h2>Audit-ready by design</h2></div><button className="text-button">Create package +</button></div>{[['Q2 Key Controls','16 controls','Ready to share'],['July Period End','9 controls','2 files missing'],['FY26 SoD Review','3 controls','In preparation']].map(([name,count,status], index) => <button className="package-item" key={name}><span className={`package-icon p${index}`}>▣</span><span><strong>{name}</strong><small>{count} · Updated today</small></span><span className={index === 0 ? 'package-ready' : 'package-progress'}>{status}</span><b>›</b></button>)}</article>
-              <article className="panel view-panel"><div className="panel-heading"><div><span className="section-kicker orange-text">Open requests</span><h2>Auditor request tracker</h2></div><span className="count-badge">3 requests</span></div><div className="request-card"><span>REQ-026</span><strong>Balance sheet reconciliation sample</strong><small>Due Jul 18 · External Audit</small><div><i style={{width:'75%'}} /><b>75%</b></div></div><div className="request-card"><span>REQ-031</span><strong>Journal approval evidence</strong><small>Due Jul 24 · Internal Audit</small><div><i style={{width:'40%'}} /><b>40%</b></div></div></article></div>
-          </section>}
+function CertificationsMvp({ controls, openControl, setActiveNav }: { controls: InventoryControl[]; openControl: (c: InventoryControl) => void; setActiveNav: (nav: Nav) => void }) {
+  const mine = controls.filter((control) => control.owner === "Erica Schmidt");
+  const completed = mine.filter((control) => control.status === "Certified").length;
+  return <section className="workspace-view"><div className="view-metrics"><article><span>Assigned to me</span><strong>{mine.length}</strong><small>Current certification period</small></article><article><span>Ownership to accept</span><strong>{mine.filter((c) => c.status === "Not started").length}</strong><small>Confirmation required</small></article><article><span>Evidence required</span><strong>{mine.filter((c) => c.evidenceRequired).length}</strong><small>Configured by Controller Admin</small></article><article><span>Certified</span><strong>{completed}</strong><small>{mine.length ? `${Math.round((completed / mine.length) * 100)}% complete` : "No assignments yet"}</small></article></div><div className="view-grid"><article className="panel view-panel"><div className="panel-heading"><div><span className="section-kicker">Certification queue</span><h2>Your assigned controls</h2></div><span className="count-badge">{mine.length} assigned</span></div>{mine.length ? mine.map((control, index) => <button className="work-item" key={control.id} onClick={() => openControl(control)}><span className={`work-order ${control.status === "Overdue" ? "urgent" : ""}`}>{index + 1}</span><span><strong>{control.name}</strong><small>{control.id} · {control.process} · {control.due}</small></span><span className={`status ${statusClass[control.status]}`}><i />{control.status}</span><b>›</b></button>) : <div className="action-empty"><span>✓</span><strong>No controls assigned yet</strong><p>A Controller Admin can assign controls to “Erica Schmidt” to populate this workspace.</p><button onClick={() => setActiveNav("Admin setup")}>Go to Admin setup</button></div>}</article><article className="panel view-panel"><div className="panel-heading"><div><span className="section-kicker">Certification journey</span><h2>Three clear confirmations</h2></div></div><div className="journey"><div><i>1</i><span><strong>Confirm & accept ownership</strong><small>Prevent passive assignment</small></span></div><div><i>2</i><span><strong>Understand the requirement</strong><small>Review instructions and DTP</small></span></div><div><i>3</i><span><strong>Perform & certify</strong><small>Attach required evidence</small></span></div></div><div className="reminder-preview"><span>✉</span><div><strong>Reminder workflow</strong><small>Configured reminders link each certifier directly to the relevant control.</small></div></div></article></div></section>;
+}
 
-          {activeNav === "Control tower" && <><section className="metrics" aria-label="Control health summary">
-            <article><div className="metric-icon blue">▦</div><div><span>Controls in scope</span><strong>31</strong><small>16 key controls</small></div></article>
-            <article><div className="metric-icon green">✓</div><div><span>On-time execution</span><strong>84%</strong><small className="up">↑ 6% vs. last period</small></div></article>
-            <article><div className="metric-icon orange">!</div><div><span>Need attention</span><strong>6</strong><small>3 missing evidence</small></div></article>
-            <article><div className="metric-icon water">⌁</div><div><span>Review turnaround</span><strong>1.8d</strong><small className="up">0.4d faster</small></div></article>
-          </section>
+function ControlsLibraryMvp({ filtered, processFilter, setProcessFilter, evidenceFilter, setEvidenceFilter, openControl, downloadReport }: { filtered: InventoryControl[]; processFilter: string; setProcessFilter: (v: string) => void; evidenceFilter: string; setEvidenceFilter: (v: string) => void; openControl: (c: InventoryControl) => void; downloadReport: () => void }) {
+  return <section className="workspace-view"><div className="view-metrics"><article><span>Controls loaded</span><strong>{filtered.length}</strong><small>Current filtered view</small></article><article><span>Key controls</span><strong>{filtered.filter((c) => c.keyControl).length}</strong><small>Framework designation</small></article><article><span>Evidence required</span><strong>{filtered.filter((c) => c.evidenceRequired).length}</strong><small>Controller editable</small></article><article><span>Sub-processes</span><strong>{new Set(filtered.map((c) => c.process)).size}</strong><small>Expandable over time</small></article></div><div className="filter-bar"><label>Sub-process<select value={processFilter} onChange={(e) => setProcessFilter(e.target.value)}><option>All processes</option>{processCounts.map(({ process }) => <option key={process}>{process}</option>)}</select></label><label>Evidence<select value={evidenceFilter} onChange={(e) => setEvidenceFilter(e.target.value)}><option>All evidence rules</option><option>Evidence required</option><option>Certification only</option></select></label><button onClick={() => { setProcessFilter("All processes"); setEvidenceFilter("All evidence rules"); }}>Clear filters</button><span>{filtered.length} controls</span></div><ControlTableMvp controls={filtered} title="ICE framework control library" openControl={openControl} showRules onExport={downloadReport} /></section>;
+}
 
-          <section className="dashboard-grid">
-            <article className="panel health-panel">
-              <div className="panel-heading"><div><span className="section-kicker">Live control health</span><h2>Execution at a glance</h2></div><button className="text-button">View report →</button></div>
-              <div className="health-content">
-                <div className="donut" aria-label="84 percent healthy"><div><strong>84%</strong><span>healthy</span></div></div>
-                <div className="legend">
-                  <div><span className="legend-dot on-track" /><span>On track</span><strong>20</strong></div>
-                  <div><span className="legend-dot in-review" /><span>In review</span><strong>5</strong></div>
-                  <div><span className="legend-dot at-risk" /><span>At risk</span><strong>4</strong></div>
-                  <div><span className="legend-dot overdue" /><span>Overdue</span><strong>2</strong></div>
-                </div>
-                <div className="region-bars">
-                  {[['North America', 92], ['Europe', 86], ['Asia', 82], ['LATAM', 71]].map(([label, value]) => (
-                    <div key={label as string}><span>{label}</span><div><i style={{ width: `${value}%` }} /></div><strong>{value}%</strong></div>
-                  ))}
-                </div>
-              </div>
-            </article>
+function ReportsMvp({ filtered, processFilter, setProcessFilter, statusFilter, setStatusFilter, evidenceFilter, setEvidenceFilter, savedReports, setSavedReports, downloadReport, notify, openControl }: { filtered: InventoryControl[]; processFilter: string; setProcessFilter: (v: string) => void; statusFilter: string; setStatusFilter: (v: string) => void; evidenceFilter: string; setEvidenceFilter: (v: string) => void; savedReports: string[]; setSavedReports: (v: string[]) => void; downloadReport: () => void; notify: (m: string) => void; openControl: (c: InventoryControl) => void }) {
+  return <section className="workspace-view"><div className="report-layout"><article className="panel report-builder"><div className="panel-heading"><div><span className="section-kicker">Advanced filters</span><h2>Build a reporting view</h2></div><button className="primary-small" onClick={() => { const name = `Saved control view ${savedReports.length + 1}`; setSavedReports([...savedReports, name]); notify(`Saved “${name}”`); }}>Save this view</button></div><div className="report-filters"><label>Region<select><option>All regions</option><option>Europe</option><option>North America</option><option>Asia</option><option>LATAM</option><option>MEA</option></select></label><label>Business unit<select><option>All business units</option><option>Food & Nutrition</option><option>Petcare</option><option>Snacking</option></select></label><label>Business process<select><option>All processes</option><option>Inventory</option><option>General Accounting</option></select></label><label>Sub-process<select value={processFilter} onChange={(e) => setProcessFilter(e.target.value)}><option>All processes</option>{processCounts.map(({ process }) => <option key={process}>{process}</option>)}</select></label><label>Status<select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}><option>All statuses</option>{Object.keys(statusClass).map((status) => <option key={status}>{status}</option>)}</select></label><label>Evidence<select value={evidenceFilter} onChange={(e) => setEvidenceFilter(e.target.value)}><option>All evidence rules</option><option>Evidence required</option><option>Certification only</option></select></label></div><div className="report-result"><div><strong>{filtered.length}</strong><span>matching controls</span></div><div><strong>{filtered.filter((c) => c.status === "Certified").length}</strong><span>certified</span></div><div><strong>{filtered.filter((c) => c.owner === "Unassigned").length}</strong><span>unassigned</span></div><button onClick={downloadReport}>⇩ Download CSV</button></div></article><aside className="panel saved-views"><div className="panel-heading"><div><span className="section-kicker">Reusable</span><h2>Saved views</h2></div></div>{savedReports.map((report, index) => <button key={report} onClick={() => notify(`Loaded “${report}”`)}><span className={`saved-icon s${index}`}>▤</span><span><strong>{report}</strong><small>{index === 0 ? "All regions · Leadership summary" : index === 1 ? "Evidence required · Not complete" : "Unassigned or reassigned"}</small></span><b>›</b></button>)}</aside></div><ControlTableMvp controls={filtered.slice(0, 10)} title="Report preview" openControl={openControl} onExport={downloadReport} /></section>;
+}
 
-            <article className="panel attention-panel">
-              <div className="panel-heading"><div><span className="section-kicker orange-text">Prioritized</span><h2>Needs your attention</h2></div><span className="count-badge">6 items</span></div>
-              <button className="attention-item" onClick={() => setSelected(controls[0])}><span className="alert-icon danger-bg">!</span><span><strong>Evidence missing</strong><small>GA.BS.01 · Europe · 2 days overdue</small></span><b>›</b></button>
-              <button className="attention-item" onClick={() => setSelected(controls[1])}><span className="alert-icon warning-bg">◷</span><span><strong>Due today, reviewer unassigned</strong><small>GA.PE.02 · LATAM · Key control</small></span><b>›</b></button>
-              <button className="attention-item" onClick={() => setSelected(controls[4])}><span className="alert-icon warning-bg">?</span><span><strong>Preparer asked for guidance</strong><small>GA.IC.01 · Asia · Intercompany</small></span><b>›</b></button>
-              <button className="attention-cta" onClick={() => setAttentionOnly(!attentionOnly)}>{attentionOnly ? "Show all controls" : "Open gap triage"}<span>→</span></button>
-            </article>
-          </section></>}
+function AdminSetupMvp({ controls, setControls, updateControl, notify, openControl, setActiveNav }: { controls: InventoryControl[]; setControls: (controls: InventoryControl[]) => void; updateControl: (id: string, updates: Partial<InventoryControl>) => void; notify: (m: string) => void; openControl: (c: InventoryControl) => void; setActiveNav: (nav: Nav) => void }) {
+  const [adminTab, setAdminTab] = useState("Scope & structure");
+  const [country, setCountry] = useState(""); const [unit, setUnit] = useState(""); const [site, setSite] = useState("");
+  const [scopeItems, setScopeItems] = useState<string[]>(() => typeof window === "undefined" ? ["Europe"] : JSON.parse(window.localStorage.getItem("icebreaker-scope") || '["Europe"]'));
+  const [reminderLog, setReminderLog] = useState<string[]>([]);
+  const saveScope = (value: string, setter: (v: string) => void) => { if (!value.trim()) return; const next = [...scopeItems, value.trim()]; setScopeItems(next); window.localStorage.setItem("icebreaker-scope", JSON.stringify(next)); setter(""); notify(`${value.trim()} added to organizational scope`); };
+  const downloadTemplate = () => { const csv = "Control ID,Certifier,Region,Business Unit,Due Date,Evidence Required\nINV.MF.01,,Europe,,,Yes"; const href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); const link = document.createElement("a"); link.href = href; link.download = "ICEbreaker-admin-upload-template.csv"; link.click(); URL.revokeObjectURL(href); };
+  const importCsv = async (file?: File) => { if (!file) return; const lines = (await file.text()).split(/\r?\n/).filter(Boolean); const headers = lines.shift()?.split(",").map((h) => h.trim()) || []; const imported = new Map(lines.map((line) => { const cells = line.split(",").map((cell) => cell.trim().replace(/^"|"$/g, "")); return [cells[headers.indexOf("Control ID")], cells]; })); setControls(controls.map((control) => { const row = imported.get(control.id); if (!row) return control; const owner = row[headers.indexOf("Certifier")] || "Unassigned"; return { ...control, owner, region: row[headers.indexOf("Region")] || control.region, unit: row[headers.indexOf("Business Unit")] || control.unit, due: row[headers.indexOf("Due Date")] || control.due, evidenceRequired: (row[headers.indexOf("Evidence Required")] || "Yes").toLowerCase() === "yes", status: owner === "Unassigned" ? "Unassigned" : "Not started" }; })); notify(`${imported.size} control rows imported`); };
+  const assigned = controls.filter((c) => c.owner !== "Unassigned").length;
+  return <section className="workspace-view"><div className="admin-tabs" role="tablist">{["Scope & structure", "Control requirements", "Ownership", "Reminders"].map((tab) => <button role="tab" aria-selected={adminTab === tab} className={adminTab === tab ? "active" : ""} key={tab} onClick={() => setAdminTab(tab)}>{tab}</button>)}</div>
+    {adminTab === "Scope & structure" && <div className="admin-grid"><article className="panel setup-card"><div className="panel-heading"><div><span className="section-kicker">Organization</span><h2>Regions, units and sites</h2></div><span className="draft-badge">Admin managed</span></div><div className="scope-tags">{scopeItems.map((item) => <span key={item}>{item}<button aria-label={`Remove ${item}`} onClick={() => { const next = scopeItems.filter((x) => x !== item); setScopeItems(next); window.localStorage.setItem("icebreaker-scope", JSON.stringify(next)); }}>×</button></span>)}</div><div className="scope-form"><label>Country or region<input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="e.g. Europe" /></label><button onClick={() => saveScope(country, setCountry)}>Add</button><label>Business unit<input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="Enter business unit" /></label><button onClick={() => saveScope(unit, setUnit)}>Add</button><label>Site / factory<input value={site} onChange={(e) => setSite(e.target.value)} placeholder="Enter site or factory" /></label><button onClick={() => saveScope(site, setSite)}>Add</button></div></article><article className="panel setup-card"><div className="panel-heading"><div><span className="section-kicker">Mass setup</span><h2>Upload controls & ownership</h2></div></div><label className="upload-zone file-card"><span>⇧</span><strong>Choose a completed CSV template</strong><small>Controls, applicability, certifiers and due-date rules</small><b>Choose file</b><input type="file" accept=".csv,text/csv" onChange={(event) => importCsv(event.target.files?.[0])} /></label><button className="template-link" onClick={downloadTemplate}>⇩ Download mass-upload template</button></article></div>}
+    {adminTab === "Control requirements" && <><div className="admin-summary"><span><strong>{controls.length}</strong> controls loaded</span><span><strong>{controls.filter((c) => c.evidenceRequired).length}</strong> evidence required</span><span><strong>{controls.filter((c) => c.dtpStatus === "Current").length}</strong> DTPs current</span><button onClick={() => notify("Suggested evidence requirements are already applied and remain editable")}>Review suggestions</button></div><article className="panel requirement-list"><div className="panel-heading"><div><span className="section-kicker">Admin editable</span><h2>Evidence, instructions & DTP</h2></div><span className="count-badge">{controls.length} controls</span></div>{controls.slice(0, 10).map((control) => <div className="requirement-row" key={control.id}><button onClick={() => openControl(control)}><span>{control.id}</span><strong>{control.name}</strong><small>{control.process}</small></button><label className="toggle-label"><input type="checkbox" checked={control.evidenceRequired} onChange={(event) => updateControl(control.id, { evidenceRequired: event.target.checked })} /><span />Evidence required</label><button className="manage-button" onClick={() => openControl(control)}>Manage guidance</button><span className={`dtp-badge ${control.dtpStatus === "Current" ? "current" : "needs"}`}>{control.dtpStatus}</span></div>)}</article></>}
+    {adminTab === "Ownership" && <div className="admin-grid"><article className="panel setup-card"><div className="panel-heading"><div><span className="section-kicker">Assignment health</span><h2>Certifier coverage</h2></div></div><div className="ownership-chart"><div><span>Assigned</span><strong>{assigned}</strong><i style={{ width: `${controls.length ? Math.round((assigned / controls.length) * 100) : 0}%` }} /></div><div><span>Certified</span><strong>{controls.filter((c) => c.status === "Certified").length}</strong><i style={{ width: `${controls.length ? Math.round((controls.filter((c) => c.status === "Certified").length / controls.length) * 100) : 0}%` }} /></div><div><span>Unassigned</span><strong>{controls.length - assigned}</strong><i style={{ width: `${controls.length ? Math.round(((controls.length - assigned) / controls.length) * 100) : 0}%` }} /></div></div><button className="wide-secondary" onClick={() => setActiveNav("Reports")}>Open ownership gap report</button></article><article className="panel setup-card"><div className="panel-heading"><div><span className="section-kicker">Quick assignment</span><h2>Unassigned controls</h2></div></div>{controls.filter((c) => c.owner === "Unassigned").slice(0, 5).map((control) => <div className="change-row" key={control.id}><span>{control.id}</span><strong>{control.name}</strong><button onClick={() => openControl(control)}>Assign →</button></div>)}{assigned === controls.length && <div className="action-empty"><strong>All controls assigned</strong></div>}</article></div>}
+    {adminTab === "Reminders" && <div className="admin-grid"><article className="panel setup-card"><div className="panel-heading"><div><span className="section-kicker">Simulation</span><h2>Reminder sequence</h2></div><span className="draft-badge">MVP workflow</span></div>{[["7 days before","Friendly heads-up"],["3 days before","Action reminder"],["On due date","Due today"],["1 day overdue","Owner + Controller Admin"]].map(([timing,label],index) => <div className="reminder-rule" key={timing}><span>{index+1}</span><div><strong>{label}</strong><small>{timing} · Includes direct ICEbreaker link</small></div><label className="toggle-label"><input type="checkbox" defaultChecked /><span /></label></div>)}<button className="wide-secondary" onClick={() => { const entry = `Preview generated ${new Date().toLocaleTimeString()}`; setReminderLog([entry, ...reminderLog]); notify(entry); }}>Generate reminder preview</button></article><article className="panel email-preview"><div className="email-head"><span>M</span><div><strong>ICEbreaker reminder</strong><small>To: Assigned Control Certifier</small></div></div><p>Your control certification is approaching its due date.</p><div><strong>Open ICEbreaker to review the requirement</strong><small>Ownership · Instructions · Evidence · Certification</small></div><button onClick={() => setActiveNav("My certifications")}>Open my certifications</button><small>{reminderLog[0] || "Generate a preview to record a simulated reminder."}</small></article></div>}
+  </section>;
+}
 
-          <section className="panel controls-panel">
-            <div className="panel-heading controls-heading">
-              <div><span className="section-kicker">Control workspace</span><h2>{attentionOnly ? "Controls needing attention" : "Upcoming & active controls"}</h2></div>
-              <div className="table-actions"><button>☷ Filters <span>2</span></button><button>⇩ Export</button></div>
-            </div>
-            <div className="table-wrap">
-              <table>
-                <thead><tr><th>Control</th><th>Owner</th><th>Region / unit</th><th>Due</th><th>Evidence</th><th>Status</th><th /></tr></thead>
-                <tbody>
-                  {filtered.map((control) => (
-                    <tr key={control.id} onClick={() => setSelected(control)}>
-                      <td><div className="control-title"><span>{control.id}</span><strong>{control.name}</strong><small>{control.process} · {control.frequency}{control.keyControl ? " · Key" : ""}</small></div></td>
-                      <td><div className="owner"><span>{control.owner.split(" ").map((part) => part[0]).join("")}</span><strong>{control.owner}</strong></div></td>
-                      <td><strong className="cell-main">{control.region}</strong><small className="cell-sub">{control.unit}</small></td>
-                      <td><strong className="cell-main">{control.due}</strong><small className="cell-sub">2026</small></td>
-                      <td><span className={control.evidence ? "evidence has-evidence" : "evidence"}>▱ {control.evidence}</span></td>
-                      <td><span className={`status ${statusClass[control.status]}`}><i />{control.status}</span></td>
-                      <td><button className="row-arrow" aria-label={`Open ${control.id}`}>›</button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {filtered.length === 0 && <div className="empty-state"><strong>No controls match this view.</strong><span>Try a different search or clear the attention filter.</span></div>}
-            </div>
-            <div className="table-footer"><span>Showing {filtered.length} of 31 controls</span><button>View all controls →</button></div>
-          </section>
-        </div>
-      </main>
+function ControlTableMvp({ controls, title, openControl, showRules = false, onExport }: { controls: InventoryControl[]; title: string; openControl: (c: InventoryControl) => void; showRules?: boolean; onExport: () => void }) {
+  return <section className="panel controls-panel"><div className="panel-heading controls-heading"><div><span className="section-kicker">Control workspace</span><h2>{title}</h2></div><div className="table-actions"><button onClick={onExport}>⇩ Export</button></div></div><div className="table-wrap"><table><thead><tr><th>Control</th><th>Certifier</th><th>Frequency</th>{showRules && <th>Evidence / DTP</th>}<th>Due</th><th>Status</th><th /></tr></thead><tbody>{controls.map((control) => <tr key={control.id} onClick={() => openControl(control)}><td><div className="control-title"><span>{control.id}</span><strong>{control.name}</strong><small>{control.process} · {control.nature}{control.keyControl ? " · Key" : ""}</small></div></td><td>{control.owner === "Unassigned" ? <span className="unassigned-owner">Assign owner</span> : <div className="owner"><span>{control.owner.split(" ").map((part) => part[0]).join("")}</span><strong>{control.owner}</strong></div>}</td><td><strong className="cell-main">{control.frequency}</strong><small className="cell-sub">{control.type}</small></td>{showRules && <td><strong className="cell-main">{control.evidenceRequired ? "Required" : "Certification only"}</strong><small className="cell-sub">DTP: {control.dtpStatus}</small></td>}<td><strong className="cell-main">{control.due}</strong><small className="cell-sub">Current period</small></td><td><span className={`status ${statusClass[control.status]}`}><i />{control.status}</span></td><td><button className="row-arrow" aria-label={`Open ${control.id}`}>›</button></td></tr>)}</tbody></table>{controls.length === 0 && <div className="empty-state"><strong>No controls match this view.</strong><span>Try clearing one or more filters.</span></div>}</div><div className="table-footer"><span>Showing {controls.length} controls</span><span>Select a row to view or configure it</span></div></section>;
+}
 
-      {selected && <>
-        <button className="drawer-scrim" onClick={() => setSelected(null)} aria-label="Close control details" />
-        <aside className="control-drawer" aria-label="Control detail panel">
-          <div className="drawer-header"><span className={`status ${statusClass[selected.status]}`}><i />{selected.status}</span><button onClick={() => setSelected(null)} aria-label="Close">×</button></div>
-          <div className="drawer-body">
-            <span className="control-id">{selected.id}{selected.keyControl && <b>Key control</b>}</span>
-            <h2>{selected.name}</h2>
-            <p className="drawer-intro">Confirm the control was performed, upload complete evidence, and route it to the assigned reviewer.</p>
-            <div className="progress-steps"><div className="done"><i>✓</i><span>Owned<small>Attested Jul 08</small></span></div><div className={selected.evidence ? "done" : "current"}><i>{selected.evidence ? "✓" : "2"}</i><span>Evidence<small>{selected.evidence ? `${selected.evidence} files uploaded` : "Upload required"}</small></span></div><div><i>3</i><span>Review<small>{selected.reviewer}</small></span></div></div>
-            <div className="detail-grid"><div><span>Owner</span><strong>{selected.owner}</strong></div><div><span>Due date</span><strong>{selected.due}, 2026</strong></div><div><span>Region</span><strong>{selected.region}</strong></div><div><span>Control type</span><strong>{selected.type}</strong></div></div>
-            <section className="drawer-section"><div><span className="section-kicker">What good looks like</span><h3>Execution guidance</h3></div><button className="guidance-card"><span>▤</span><span><strong>Best-practice instruction</strong><small>5-minute read · Updated Jun 2026</small></span><b>↗</b></button><button className="guidance-card"><span>▱</span><span><strong>Past accepted evidence</strong><small>View 4 examples from prior periods</small></span><b>›</b></button></section>
-            <section className="drawer-section"><div><span className="section-kicker">Ownership</span><h3>People & support</h3></div><div className="people-row"><span className="avatar orange-avatar">{selected.owner.split(" ").map((part) => part[0]).join("")}</span><span><small>Preparer</small><strong>{selected.owner}</strong></span><button>Reassign</button></div><div className="people-row"><span className="avatar blue-avatar">MR</span><span><small>Reviewer</small><strong>{selected.reviewer}</strong></span><button>Message</button></div></section>
-          </div>
-          <div className="drawer-footer"><button className="secondary-button">Ask for guidance</button><button className="primary-button">{selected.evidence ? "Open review" : "Upload evidence"}</button></div>
-        </aside>
-      </>}
-    </div>
-  );
+function ControlTower({ openControl, notify }: { openControl: (c: InventoryControl) => void; notify: (m: string) => void }) {
+  const attention = inventoryControls.filter((c) => ["Overdue", "Evidence needed", "Unassigned"].includes(c.status)).slice(0, 4);
+  return <><section className="metrics" aria-label="Inventory control health summary"><Metric label="Pilot controls" value="50" note="37 key controls" /><Metric label="On-time certification" value="82%" note="↑ 5% this period" tone="green" /><Metric label="Need attention" value="12" note="Evidence or ownership gaps" tone="orange" /><Metric label="DTP coverage" value="68%" note="16 procedures to complete" tone="water" /></section>
+    <section className="dashboard-grid"><article className="panel health-panel"><div className="panel-heading"><div><span className="section-kicker">Live control health</span><h2>Europe inventory at a glance</h2></div><button className="text-button">View report →</button></div><div className="health-content"><div className="donut" aria-label="82 percent healthy"><div><strong>82%</strong><span>on track</span></div></div><div className="legend"><div><span className="legend-dot on-track" /><span>Certified</span><strong>26</strong></div><div><span className="legend-dot in-review" /><span>Due soon</span><strong>8</strong></div><div><span className="legend-dot at-risk" /><span>Evidence gap</span><strong>8</strong></div><div><span className="legend-dot overdue" /><span>Overdue</span><strong>8</strong></div></div><div className="region-bars"><div><span>Manufacturing</span><div><i style={{ width: "91%" }} /></div><strong>91%</strong></div><div><span>Period End</span><div><i style={{ width: "84%" }} /></div><strong>84%</strong></div><div><span>Counts</span><div><i style={{ width: "76%" }} /></div><strong>76%</strong></div><div><span>Warehousing</span><div><i style={{ width: "68%" }} /></div><strong>68%</strong></div></div></div></article>
+      <article className="panel attention-panel"><div className="panel-heading"><div><span className="section-kicker orange-text">Prioritized</span><h2>Needs your attention</h2></div><span className="count-badge">12 items</span></div>{attention.slice(0, 3).map((control) => <button className="attention-item" key={control.id} onClick={() => openControl(control)}><span className={`alert-icon ${control.status === "Overdue" ? "danger-bg" : "warning-bg"}`}>{control.status === "Unassigned" ? "?" : "!"}</span><span><strong>{control.status}</strong><small>{control.id} · {control.process} · {control.due}</small></span><b>›</b></button>)}<button className="attention-cta" onClick={() => notify("Simulated reminder prepared for 8 certifiers")}>Send reminder preview<span>→</span></button></article></section>
+    <ControlTable controls={inventoryControls.slice(0, 8)} title="Upcoming & active certifications" openControl={openControl} />
+  </>;
+}
+
+function Certifications({ openControl }: { openControl: (c: InventoryControl) => void }) {
+  const mine = inventoryControls.filter((c) => c.owner === "Elena Rossi" || c.owner === "Thomas Müller").slice(0, 8);
+  return <section className="workspace-view"><div className="view-metrics"><article><span>Assigned to me</span><strong>8</strong><small>July certification period</small></article><article><span>Ownership to accept</span><strong>2</strong><small>Confirmation required</small></article><article><span>Due this week</span><strong>3</strong><small>One needs evidence</small></article><article><span>Certified</span><strong>4</strong><small>100% on time</small></article></div><div className="view-grid"><article className="panel view-panel"><div className="panel-heading"><div><span className="section-kicker">Prioritized queue</span><h2>Your next best actions</h2></div><span className="count-badge">8 assigned</span></div>{mine.map((control, index) => <button className="work-item" key={control.id} onClick={() => openControl(control)}><span className={`work-order ${index < 2 ? "urgent" : ""}`}>{index + 1}</span><span><strong>{control.name}</strong><small>{control.id} · {control.process} · {control.due}</small></span><span className={`status ${statusClass[control.status]}`}><i />{control.status}</span><b>›</b></button>)}</article><article className="panel view-panel"><div className="panel-heading"><div><span className="section-kicker">Certification journey</span><h2>Three clear confirmations</h2></div></div><div className="journey"><div className="done"><i>✓</i><span><strong>Confirm & accept ownership</strong><small>Prevent passive assignment</small></span></div><div className="current"><i>2</i><span><strong>Understand the requirement</strong><small>Review instructions and DTP</small></span></div><div><i>3</i><span><strong>Perform & certify</strong><small>Attach required evidence</small></span></div></div><div className="reminder-preview"><span>✉</span><div><strong>Reminder preview</strong><small>“Your inventory certification is due in 3 days. Open ICEbreaker to complete it.”</small></div></div></article></div></section>;
+}
+
+function ControlsLibrary({ filtered, processFilter, setProcessFilter, evidenceFilter, setEvidenceFilter, openControl }: { filtered: InventoryControl[]; processFilter: string; setProcessFilter: (v: string) => void; evidenceFilter: string; setEvidenceFilter: (v: string) => void; openControl: (c: InventoryControl) => void }) {
+  return <section className="workspace-view"><div className="view-metrics"><article><span>Controls in pilot library</span><strong>50</strong><small>2 hospital controls excluded</small></article><article><span>Key controls</span><strong>37</strong><small>74% of pilot library</small></article><article><span>Evidence suggested</span><strong>39</strong><small>Controller editable</small></article><article><span>Sub-processes</span><strong>19</strong><small>Expandable over time</small></article></div><div className="filter-bar"><label>Sub-process<select value={processFilter} onChange={(e) => setProcessFilter(e.target.value)}><option>All processes</option>{processCounts.map(({ process }) => <option key={process}>{process}</option>)}</select></label><label>Evidence<select value={evidenceFilter} onChange={(e) => setEvidenceFilter(e.target.value)}><option>All evidence rules</option><option>Evidence required</option><option>Certification only</option></select></label><button onClick={() => { setProcessFilter("All processes"); setEvidenceFilter("All evidence rules"); }}>Clear filters</button><span>{filtered.length} controls</span></div><ControlTable controls={filtered} title="Europe inventory control library" openControl={openControl} showRules /></section>;
+}
+
+function Reports({ filtered, processFilter, setProcessFilter, statusFilter, setStatusFilter, evidenceFilter, setEvidenceFilter, savedReports, setSavedReports, downloadReport, notify }: { filtered: InventoryControl[]; processFilter: string; setProcessFilter: (v: string) => void; statusFilter: string; setStatusFilter: (v: string) => void; evidenceFilter: string; setEvidenceFilter: (v: string) => void; savedReports: string[]; setSavedReports: (v: string[]) => void; downloadReport: () => void; notify: (m: string) => void }) {
+  return <section className="workspace-view"><div className="report-layout"><article className="panel report-builder"><div className="panel-heading"><div><span className="section-kicker">Advanced filters</span><h2>Build a reporting view</h2></div><button className="primary-small" onClick={() => { const name = `Europe inventory view ${savedReports.length + 1}`; setSavedReports([...savedReports, name]); notify(`Saved “${name}”`); }}>Save this view</button></div><div className="report-filters"><label>Region<select><option>Europe</option></select></label><label>Business unit<select><option>All business units</option><option>Food & Nutrition</option><option>Petcare</option><option>Snacking</option></select></label><label>Sub-process<select value={processFilter} onChange={(e) => setProcessFilter(e.target.value)}><option>All processes</option>{processCounts.map(({ process }) => <option key={process}>{process}</option>)}</select></label><label>Status<select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}><option>All statuses</option>{Object.keys(statusClass).map((status) => <option key={status}>{status}</option>)}</select></label><label>Evidence<select value={evidenceFilter} onChange={(e) => setEvidenceFilter(e.target.value)}><option>All evidence rules</option><option>Evidence required</option><option>Certification only</option></select></label><label>Control type<select><option>All control types</option><option>Key controls</option><option>Non-key controls</option></select></label></div><div className="report-result"><div><strong>{filtered.length}</strong><span>matching controls</span></div><div><strong>{filtered.filter((c) => c.status === "Certified").length}</strong><span>certified</span></div><div><strong>{filtered.filter((c) => c.owner === "Unassigned").length}</strong><span>unassigned</span></div><button onClick={downloadReport}>⇩ Download CSV</button></div></article><aside className="panel saved-views"><div className="panel-heading"><div><span className="section-kicker">Reusable</span><h2>Saved views</h2></div></div>{savedReports.map((report, index) => <button key={report} onClick={() => notify(`Loaded “${report}”`)}><span className={`saved-icon s${index}`}>▤</span><span><strong>{report}</strong><small>{index === 0 ? "All Europe · Leadership summary" : index === 1 ? "Evidence required · Not complete" : "Unassigned or reassigned"}</small></span><b>›</b></button>)}</aside></div><ControlTable controls={filtered.slice(0, 10)} title="Report preview" openControl={() => {}} /></section>;
+}
+
+function AdminSetup({ notify, openControl }: { notify: (m: string) => void; openControl: (c: InventoryControl) => void }) {
+  const [adminTab, setAdminTab] = useState("Pilot scope");
+  return <section className="workspace-view"><div className="admin-tabs" role="tablist">{["Pilot scope", "Control requirements", "Ownership", "Reminders"].map((tab) => <button role="tab" aria-selected={adminTab === tab} className={adminTab === tab ? "active" : ""} key={tab} onClick={() => setAdminTab(tab)}>{tab}</button>)}</div>
+    {adminTab === "Pilot scope" && <div className="admin-grid"><article className="panel setup-card"><div className="panel-heading"><div><span className="section-kicker">Organization</span><h2>Europe pilot hierarchy</h2></div><span className="draft-badge">Draft setup</span></div><div className="hierarchy"><div><span className="tree-icon">EU</span><strong>Europe</strong><button onClick={() => notify("Country setup opened")}>+ Country</button></div><div className="tree-child"><span>◇</span><strong>Business units</strong><small>Define when pilot participants are known</small><button onClick={() => notify("Business unit added")}>Add</button></div><div className="tree-child"><span>□</span><strong>Sites / factories</strong><small>Assign applicability at site level</small><button onClick={() => notify("Site setup opened")}>Add</button></div><div className="tree-child"><span>▦</span><strong>Company codes</strong><small>Optional reporting attribute</small><button onClick={() => notify("Company code setup opened")}>Add</button></div></div><button className="wide-secondary" onClick={() => notify("Pilot hierarchy saved as draft")}>Save draft structure</button></article><article className="panel setup-card"><div className="panel-heading"><div><span className="section-kicker">Mass setup</span><h2>Upload controls & ownership</h2></div></div><div className="upload-zone"><span>⇧</span><strong>Drop an Excel file here</strong><small>Controls, applicability, certifiers and due-date rules</small><button onClick={() => notify("Upload simulated — template validated")}>Choose file</button></div><button className="template-link" onClick={() => notify("Admin template download prepared")}>⇩ Download mass-upload template</button></article></div>}
+    {adminTab === "Control requirements" && <><div className="admin-summary"><span><strong>50</strong> controls loaded</span><span><strong>39</strong> evidence suggestions</span><span><strong>34</strong> DTPs current</span><button onClick={() => notify("Evidence suggestions applied")}>Apply suggested requirements</button></div><article className="panel requirement-list"><div className="panel-heading"><div><span className="section-kicker">Admin editable</span><h2>Evidence, instructions & DTP</h2></div><span className="count-badge">50 controls</span></div>{inventoryControls.slice(0, 8).map((control) => <div className="requirement-row" key={control.id}><button onClick={() => openControl(control)}><span>{control.id}</span><strong>{control.name}</strong><small>{control.process}</small></button><label className="toggle-label"><input type="checkbox" defaultChecked={control.evidenceRequired} /><span />Evidence required</label><button className="manage-button" onClick={() => notify(`Instructions opened for ${control.id}`)}>Manage guidance</button><span className={`dtp-badge ${control.dtpStatus === "Current" ? "current" : "needs"}`}>{control.dtpStatus}</span></div>)}</article></>}
+    {adminTab === "Ownership" && <div className="admin-grid"><article className="panel setup-card"><div className="panel-heading"><div><span className="section-kicker">Assignment health</span><h2>Certifier coverage</h2></div></div><div className="ownership-chart"><div><span>Assigned</span><strong>42</strong><i style={{ width: "84%" }} /></div><div><span>Awaiting acceptance</span><strong>6</strong><i style={{ width: "12%" }} /></div><div><span>Unassigned</span><strong>8</strong><i style={{ width: "16%" }} /></div></div><button className="wide-secondary" onClick={() => notify("Ownership gap report opened")}>Open ownership gap report</button></article><article className="panel setup-card"><div className="panel-heading"><div><span className="section-kicker">Controlled handover</span><h2>Recent ownership changes</h2></div></div>{[["INV.PE.07","Sophie Laurent → Ana Silva"],["INV.CT.04","Marek Nowak → Thomas Müller"],["INV.BS.01","Unassigned → Elena Rossi"]].map(([id,change]) => <div className="change-row" key={id}><span>{id}</span><strong>{change}</strong><small>Handover & training confirmed</small></div>)}</article></div>}
+    {adminTab === "Reminders" && <div className="admin-grid"><article className="panel setup-card"><div className="panel-heading"><div><span className="section-kicker">Simulation</span><h2>Reminder sequence</h2></div><span className="draft-badge">Email preview</span></div>{[["7 days before","Friendly heads-up"],["3 days before","Action reminder"],["On due date","Due today"],["1 day overdue","Owner + Controller Admin"]].map(([timing,label],index) => <div className="reminder-rule" key={timing}><span>{index+1}</span><div><strong>{label}</strong><small>{timing} · Includes direct ICEbreaker link</small></div><label className="toggle-label"><input type="checkbox" defaultChecked /><span /></label></div>)}<button className="wide-secondary" onClick={() => notify("Test reminder preview sent")}>Preview simulated email</button></article><article className="panel email-preview"><div className="email-head"><span>M</span><div><strong>ICEbreaker reminder</strong><small>To: Control Certifier</small></div></div><p>Your inventory control <b>INV.PE.07</b> is due in 3 days.</p><div><strong>Inventory Reserve Calculation and Review</strong><small>Evidence required · Quarterly</small></div><button>Open my certification</button><small>This is a simulated reminder for the MVP.</small></article></div>}
+  </section>;
+}
+
+function ControlTable({ controls, title, openControl, showRules = false }: { controls: InventoryControl[]; title: string; openControl: (c: InventoryControl) => void; showRules?: boolean }) {
+  return <section className="panel controls-panel"><div className="panel-heading controls-heading"><div><span className="section-kicker">Control workspace</span><h2>{title}</h2></div><div className="table-actions"><button>☷ Filters</button><button>⇩ Export</button></div></div><div className="table-wrap"><table><thead><tr><th>Control</th><th>Certifier</th><th>Frequency</th>{showRules && <th>Evidence / DTP</th>}<th>Due</th><th>Status</th><th /></tr></thead><tbody>{controls.map((control) => <tr key={control.id} onClick={() => openControl(control)}><td><div className="control-title"><span>{control.id}</span><strong>{control.name}</strong><small>{control.process} · {control.nature}{control.keyControl ? " · Key" : ""}</small></div></td><td>{control.owner === "Unassigned" ? <span className="unassigned-owner">Assign owner</span> : <div className="owner"><span>{control.owner.split(" ").map((part) => part[0]).join("")}</span><strong>{control.owner}</strong></div>}</td><td><strong className="cell-main">{control.frequency}</strong><small className="cell-sub">{control.type}</small></td>{showRules && <td><strong className="cell-main">{control.evidenceRequired ? "Required" : "Certification only"}</strong><small className="cell-sub">DTP: {control.dtpStatus}</small></td>}<td><strong className="cell-main">{control.due}</strong><small className="cell-sub">July 2026</small></td><td><span className={`status ${statusClass[control.status]}`}><i />{control.status}</span></td><td><button className="row-arrow" aria-label={`Open ${control.id}`}>›</button></td></tr>)}</tbody></table>{controls.length === 0 && <div className="empty-state"><strong>No controls match this view.</strong><span>Try clearing one or more filters.</span></div>}</div><div className="table-footer"><span>Showing {controls.length} of 50 Europe inventory controls</span><button>View details →</button></div></section>;
 }

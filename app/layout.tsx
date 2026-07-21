@@ -11,7 +11,7 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     metadataBase,
     title: "ICEbreaker | Digitalized Controls Hub",
-    description: "A proactive controls workspace for execution, review, evidence and risk visibility.",
+    description: "A scalable controls workspace for ownership, certification, evidence and proactive risk visibility.",
     icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
     openGraph: {
       title: "ICEbreaker | Digitalized Controls Hub",

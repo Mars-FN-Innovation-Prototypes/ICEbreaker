@@ -14,7 +14,7 @@ async function render() {
   );
 }
 
-test("server-renders the ICEbreaker control tower", async () => {
+test("server-renders the scalable ICEbreaker control tower", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -22,14 +22,15 @@ test("server-renders the ICEbreaker control tower", async () => {
   const html = await response.text();
   assert.match(html, /<title>ICEbreaker \| Digitalized Controls Hub<\/title>/i);
   assert.match(html, /See risk sooner\. Act before it grows\./);
-  assert.match(html, /Performance of Balance Sheet Account Reconciliations/);
+  assert.match(html, /Enterprise control health/i);
+  assert.match(html, /Creation and Changes to Bill of Materials/);
   assert.match(html, /Needs your attention/);
   assert.match(html, /og:image/);
   assert.match(html, /https?:\/\/[^\"']+\/og\.png/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
-test("keeps the prototype accessible and brand-aligned", async () => {
+test("keeps the MVP accessible, functional and brand-aligned", async () => {
   const [page, layout, css, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -39,6 +40,15 @@ test("keeps the prototype accessible and brand-aligned", async () => {
 
   assert.match(page, /aria-label="Primary navigation"/);
   assert.match(page, /aria-label="Control detail panel"/);
+  assert.match(page, /My certifications/);
+  assert.match(page, /Admin setup/);
+  assert.match(page, /Download CSV/);
+  assert.match(page, /I confirm and accept ownership/);
+  assert.match(page, /Desktop procedure/);
+  assert.match(page, /Simulated reminder/);
+  assert.match(page, /localStorage/);
+  assert.match(page, /importCsv/);
+  assert.match(page, /updateControl/);
   assert.match(page, /\/brand\/logo-lockup\.png/);
   assert.match(page, /\/brand\/better-food-text\.png/);
   assert.match(layout, /requestHeaders\.get\("x-forwarded-host"\)/);
@@ -46,4 +56,8 @@ test("keeps the prototype accessible and brand-aligned", async () => {
   assert.match(css, /--mars-blue:\s*#0000a0/);
   assert.match(css, /prefers-reduced-motion/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
+
+  const inventory = await readFile(new URL("../app/inventory-controls.ts", import.meta.url), "utf8");
+  assert.match(inventory, /INV\.PD\.01/);
+  assert.doesNotMatch(inventory, /INV\.CT\.06|INV\.CT\.09/);
 });
