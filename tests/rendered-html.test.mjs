@@ -76,7 +76,12 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /Handover of responsibilities is complete/);
   assert.match(page, /Gap remediation/);
   assert.match(page, /Controller closure approval/);
-  assert.match(page, /Procedure summary/);
+  assert.match(page, /Procedure steps/);
+  assert.match(page, /Save DTP guidance/);
+  assert.match(page, /What happens after submission/);
+  assert.match(page, /Submit gap/);
+  assert.match(page, /Submit request/);
+  assert.match(page, /ICEbreaker-Stakeholder-Review-Guide\.docx/);
   assert.match(page, /executionKey\(period/);
   assert.match(page, /Array\.isArray\(parsed\)/);
   assert.match(page, /ControlDrawerBoundary/);

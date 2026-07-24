@@ -1003,6 +1003,13 @@ function OverlayPanel({
             <a className="doc-download" href="./ICEbreaker-101.docx" download>
               ⇩ Download the complete ICEbreaker 101 guide
             </a>
+            <a
+              className="doc-download stakeholder-guide"
+              href="./ICEbreaker-Stakeholder-Review-Guide.docx"
+              download
+            >
+              ⇩ Download the stakeholder review guide
+            </a>
           </div>
         )}
         {type === "notifications" && (
@@ -3080,6 +3087,21 @@ function ControlDrawer({
   const [newOwner, setNewOwner] = useState("");
   const [handover, setHandover] = useState(false);
   const [training, setTraining] = useState(false);
+  const [requestModal, setRequestModal] = useState<
+    "gap" | "guidance" | null
+  >(null);
+  const [gapRequest, setGapRequest] = useState({
+    title: "",
+    description: "",
+    severity: "Medium" as RemediationGap["severity"],
+    owner: draft.owner === "Unassigned" ? CURRENT_USER : draft.owner,
+    due: "",
+  });
+  const [guidanceRequest, setGuidanceRequest] = useState({
+    topic: "Procedure or DTP",
+    urgency: "Standard",
+    question: "",
+  });
   const saveAdmin = () => {
     const status: ControlStatus =
       draft.owner === "Unassigned"
@@ -3127,22 +3149,38 @@ function ControlDrawer({
     notify(`${control.id} reassigned to ${change.toOwner}`);
     close();
   };
-  const logGap = () => {
-    const title = window.prompt(
-      "Describe the control gap",
-      `${control.id} execution exception`,
+  const saveDtp = () => {
+    updateControl(control.id, {
+      dtpSummary: draft.dtpSummary,
+      dtpOwner: draft.dtpOwner,
+      dtpVersion: draft.dtpVersion,
+      dtpLastReviewed: draft.dtpLastReviewed,
+      dtpNextReview: draft.dtpNextReview,
+      dtpDocument: draft.dtpDocument,
+      dtpStatus: draft.dtpStatus,
+    });
+    appendAudit(
+      control.id,
+      "DTP guidance updated",
+      `${draft.dtpDocument || "Inline procedure"} · ${draft.dtpVersion || "No version"}`,
     );
-    if (!title?.trim()) return;
+    notify(`${control.id} DTP guidance saved`);
+  };
+  const submitGap = () => {
+    if (!gapRequest.title.trim() || !gapRequest.description.trim()) {
+      notify("Add a gap title and remediation detail");
+      return;
+    }
     setGaps((current) => [
       {
         id: crypto.randomUUID(),
         controlId: control.id,
         period,
-        title: title.trim(),
-        description: "",
-        severity: "Medium",
-        owner: draft.owner,
-        due: "",
+        title: gapRequest.title.trim(),
+        description: gapRequest.description.trim(),
+        severity: gapRequest.severity,
+        owner: gapRequest.owner.trim() || CURRENT_USER,
+        due: gapRequest.due,
         status: "Open",
         closureEvidence: "",
         controllerApproved: false,
@@ -3150,8 +3188,33 @@ function ControlDrawer({
       },
       ...current,
     ]);
-    appendAudit(control.id, "Gap logged", title.trim());
-    notify(`Gap logged for ${control.id}`);
+    appendAudit(
+      control.id,
+      "Gap logged",
+      `${gapRequest.severity}: ${gapRequest.title.trim()}`,
+    );
+    setRequestModal(null);
+    setGapRequest({
+      ...gapRequest,
+      title: "",
+      description: "",
+      due: "",
+    });
+    notify(`Gap submitted · now visible in Gap remediation`);
+  };
+  const submitGuidance = () => {
+    if (!guidanceRequest.question.trim()) {
+      notify("Describe the guidance you need");
+      return;
+    }
+    appendAudit(
+      control.id,
+      "Guidance requested",
+      `${guidanceRequest.topic} · ${guidanceRequest.urgency}: ${guidanceRequest.question.trim()}`,
+    );
+    setRequestModal(null);
+    setGuidanceRequest({ ...guidanceRequest, question: "" });
+    notify("Guidance request submitted to the Controller team");
   };
   return (
     <>
@@ -3286,22 +3349,34 @@ function ControlDrawer({
                 </label>
                 <button onClick={saveAdmin}>Save control requirements</button>
               </section>
-              <section className="drawer-section">
-                <div>
+              <section className="drawer-section dtp-editor">
+                <div className="dtp-heading">
                   <span className="section-kicker">Desktop procedure</span>
                   <h3>DTP guidance</h3>
+                  <p>
+                    Capture the working steps here and attach the detailed
+                    procedure when one exists. Control Owners see both in their
+                    review experience.
+                  </p>
                 </div>
-                <label>
-                  Procedure summary
+                <label className="dtp-procedure-field">
+                  <span>Procedure steps</span>
                   <textarea
                     value={draft.dtpSummary}
-                    placeholder="Add concise steps here, or summarize the attached procedure"
+                    rows={7}
+                    placeholder={
+                      "1. Run the inventory report for the review period.\n2. Compare exceptions to the documented threshold.\n3. Investigate variances and retain the final approved report."
+                    }
                     onChange={(e) =>
                       setDraft({ ...draft, dtpSummary: e.target.value })
                     }
                   />
+                  <small>
+                    Add enough detail for a new owner to understand the
+                    sequence. Use numbered steps, checks and escalation points.
+                  </small>
                 </label>
-                <div className="detail-grid">
+                <div className="dtp-meta-grid">
                   <label>
                     Version
                     <input
@@ -3348,7 +3423,7 @@ function ControlDrawer({
                     />
                   </label>
                 </div>
-                <label className="guidance-card file-card">
+                <label className="guidance-card file-card dtp-upload">
                   <span>▤</span>
                   <span>
                     <strong>
@@ -3375,18 +3450,25 @@ function ControlDrawer({
                     }}
                   />
                 </label>
-                <button
-                  className="wide-secondary"
-                  onClick={() =>
-                    setDraft({
-                      ...draft,
-                      dtpStatus: "Current",
-                      dtpLastReviewed: new Date().toISOString().slice(0, 10),
-                    })
-                  }
-                >
-                  Confirm DTP is current
-                </button>
+                <div className="dtp-actions">
+                  <button className="primary-button" onClick={saveDtp}>
+                    Save DTP guidance
+                  </button>
+                  <button
+                    className="secondary-button"
+                    onClick={() =>
+                      setDraft({
+                        ...draft,
+                        dtpStatus: "Current",
+                        dtpLastReviewed: new Date()
+                          .toISOString()
+                          .slice(0, 10),
+                      })
+                    }
+                  >
+                    Confirm current
+                  </button>
+                </div>
               </section>
             </>
           ) : (
@@ -3557,15 +3639,16 @@ function ControlDrawer({
         </div>
         <div className="drawer-footer">
           {role === "Controller Admin" && (
-            <button className="secondary-button" onClick={logGap}>
+            <button
+              className="secondary-button"
+              onClick={() => setRequestModal("gap")}
+            >
               Log a gap
             </button>
           )}
           <button
             className="secondary-button"
-            onClick={() =>
-              notify("Guidance request recorded for the Controller team")
-            }
+            onClick={() => setRequestModal("guidance")}
           >
             Ask for guidance
           </button>
@@ -3608,6 +3691,208 @@ function ControlDrawer({
           )}
         </div>
       </aside>
+      {requestModal && (
+        <>
+          <button
+            className="request-dialog-scrim"
+            aria-label="Close request form"
+            onClick={() => setRequestModal(null)}
+          />
+          <section
+            className="request-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="request-dialog-title"
+          >
+            <header>
+              <div>
+                <span className="section-kicker">
+                  {requestModal === "gap"
+                    ? "Exception management"
+                    : "Controller support"}
+                </span>
+                <h2 id="request-dialog-title">
+                  {requestModal === "gap"
+                    ? "Log a control gap"
+                    : "Ask for guidance"}
+                </h2>
+                <p>
+                  {control.id} · {control.name}
+                </p>
+              </div>
+              <button
+                aria-label="Close request form"
+                onClick={() => setRequestModal(null)}
+              >
+                ×
+              </button>
+            </header>
+            {requestModal === "gap" ? (
+              <div className="request-dialog-body">
+                <div className="request-outcome">
+                  <span>!</span>
+                  <div>
+                    <strong>What happens after submission?</strong>
+                    <p>
+                      The item appears in Gap remediation for Controller review,
+                      assignment, target-date tracking and closure approval.
+                    </p>
+                  </div>
+                </div>
+                <label>
+                  Gap title
+                  <input
+                    value={gapRequest.title}
+                    onChange={(e) =>
+                      setGapRequest({ ...gapRequest, title: e.target.value })
+                    }
+                    placeholder="Summarize the exception"
+                  />
+                </label>
+                <label>
+                  What happened and what needs to be remediated?
+                  <textarea
+                    rows={5}
+                    value={gapRequest.description}
+                    onChange={(e) =>
+                      setGapRequest({
+                        ...gapRequest,
+                        description: e.target.value,
+                      })
+                    }
+                    placeholder="Describe the issue, impact and expected corrective action"
+                  />
+                </label>
+                <div className="request-field-grid">
+                  <label>
+                    Severity
+                    <select
+                      value={gapRequest.severity}
+                      onChange={(e) =>
+                        setGapRequest({
+                          ...gapRequest,
+                          severity: e.target
+                            .value as RemediationGap["severity"],
+                        })
+                      }
+                    >
+                      <option>Low</option>
+                      <option>Medium</option>
+                      <option>High</option>
+                      <option>Critical</option>
+                    </select>
+                  </label>
+                  <label>
+                    Remediation owner
+                    <input
+                      value={gapRequest.owner}
+                      onChange={(e) =>
+                        setGapRequest({ ...gapRequest, owner: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Target date
+                    <input
+                      type="date"
+                      value={gapRequest.due}
+                      onChange={(e) =>
+                        setGapRequest({ ...gapRequest, due: e.target.value })
+                      }
+                    />
+                  </label>
+                </div>
+                <footer>
+                  <button
+                    className="secondary-button"
+                    onClick={() => setRequestModal(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button className="primary-button" onClick={submitGap}>
+                    Submit gap
+                  </button>
+                </footer>
+              </div>
+            ) : (
+              <div className="request-dialog-body">
+                <div className="request-outcome guidance">
+                  <span>?</span>
+                  <div>
+                    <strong>What happens after submission?</strong>
+                    <p>
+                      The request is added to this control activity history
+                      and a simulated notification is sent to the Controller
+                      team. Enterprise routing will use Microsoft 365.
+                    </p>
+                  </div>
+                </div>
+                <div className="request-field-grid">
+                  <label>
+                    Guidance topic
+                    <select
+                      value={guidanceRequest.topic}
+                      onChange={(e) =>
+                        setGuidanceRequest({
+                          ...guidanceRequest,
+                          topic: e.target.value,
+                        })
+                      }
+                    >
+                      <option>Procedure or DTP</option>
+                      <option>Evidence requirement</option>
+                      <option>Control interpretation</option>
+                      <option>Ownership or reassignment</option>
+                      <option>Technical issue</option>
+                    </select>
+                  </label>
+                  <label>
+                    Response needed
+                    <select
+                      value={guidanceRequest.urgency}
+                      onChange={(e) =>
+                        setGuidanceRequest({
+                          ...guidanceRequest,
+                          urgency: e.target.value,
+                        })
+                      }
+                    >
+                      <option>Standard</option>
+                      <option>Before due date</option>
+                      <option>Urgent — execution blocked</option>
+                    </select>
+                  </label>
+                </div>
+                <label>
+                  What guidance do you need?
+                  <textarea
+                    rows={6}
+                    value={guidanceRequest.question}
+                    onChange={(e) =>
+                      setGuidanceRequest({
+                        ...guidanceRequest,
+                        question: e.target.value,
+                      })
+                    }
+                    placeholder="Include the question, relevant context and any decision you need from the Controller team"
+                  />
+                </label>
+                <footer>
+                  <button
+                    className="secondary-button"
+                    onClick={() => setRequestModal(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button className="primary-button" onClick={submitGuidance}>
+                    Submit request
+                  </button>
+                </footer>
+              </div>
+            )}
+          </section>
+        </>
+      )}
     </>
   );
 }
