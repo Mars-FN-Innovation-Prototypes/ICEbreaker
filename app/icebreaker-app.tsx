@@ -554,6 +554,7 @@ export default function IcebreakerApp() {
           site: control.site,
           accepted: control.accepted || false,
           understood: control.understood || false,
+          acknowledgedAt: control.acknowledgedAt,
           performed: control.performed || false,
           certifiedAt: control.certifiedAt,
         };
@@ -581,6 +582,8 @@ export default function IcebreakerApp() {
         "Control Owner",
         "Region",
         "Site / factory",
+        "Ownership acknowledged",
+        "Acknowledged at",
         "Status",
         "Due",
       ],
@@ -596,6 +599,8 @@ export default function IcebreakerApp() {
         c.owner,
         c.region,
         c.site,
+        c.accepted && c.understood ? "Yes" : "No",
+        c.acknowledgedAt || "",
         c.status,
         c.due,
       ]),
@@ -1269,11 +1274,11 @@ function MyControls({
           <small>Current period</small>
         </article>
         <article>
-          <span>To accept</span>
+          <span>To acknowledge</span>
           <strong>
-            {controls.filter((c) => c.status === "Unassigned").length}
+            {controls.filter((c) => !c.accepted || !c.understood).length}
           </strong>
-          <small>Ownership confirmation</small>
+          <small>Accept and understand</small>
         </article>
         <article>
           <span>Need attention</span>
@@ -1319,13 +1324,15 @@ function MyControls({
                 </span>
                 <span className={`status ${statusClass[control.status]}`}>
                   <i />
-                  {control.status}
+                  {!control.accepted || !control.understood
+                    ? "Acknowledge"
+                    : control.status}
                 </span>
                 <b>›</b>
               </button>
             ))}
           </article>
-          <OwnerJourney />
+          <OwnerJourney controls={controls} />
         </div>
       ) : (
         <article className="panel owner-empty">
@@ -1344,7 +1351,15 @@ function MyControls({
   );
 }
 
-function OwnerJourney() {
+function OwnerJourney({ controls }: { controls: InventoryControl[] }) {
+  const total = controls.length;
+  const acknowledged = controls.filter(
+    (control) => control.accepted && control.understood,
+  ).length;
+  const performed = controls.filter((control) => control.performed).length;
+  const certified = controls.filter(
+    (control) => control.status === "Certified",
+  ).length;
   return (
     <article className="panel view-panel">
       <div className="panel-heading">
@@ -1354,25 +1369,47 @@ function OwnerJourney() {
         </div>
       </div>
       <div className="journey">
-        <div className="done">
+        <div className={acknowledged === total && total ? "done" : "current"}>
           <i>1</i>
           <span>
             <strong>Confirm & accept ownership</strong>
-            <small>Make accountability explicit</small>
+            <small>
+              {acknowledged} of {total} acknowledged separately
+            </small>
           </span>
         </div>
-        <div className="current">
+        <div
+          className={
+            performed === total && total
+              ? "done"
+              : acknowledged > 0
+                ? "current"
+                : ""
+          }
+        >
           <i>2</i>
           <span>
             <strong>Understand & perform</strong>
-            <small>Follow instructions and DTP</small>
+            <small>
+              {performed} of {total} execution confirmations
+            </small>
           </span>
         </div>
-        <div>
+        <div
+          className={
+            certified === total && total
+              ? "done"
+              : performed > 0
+                ? "current"
+                : ""
+          }
+        >
           <i>3</i>
           <span>
             <strong>Upload & certify</strong>
-            <small>Attach evidence where required</small>
+            <small>
+              {certified} of {total} controls certified
+            </small>
           </span>
         </div>
       </div>
@@ -3012,7 +3049,7 @@ function AdminSetup({
                 notify(entry);
               }}
             >
-              Generate reminder preview
+              Generate simulated email preview
             </button>
           </article>
           <article className="panel email-preview">
@@ -3035,10 +3072,14 @@ function AdminSetup({
               {reminderLog ||
                 "Generate a preview to record a simulated reminder."}
             </small>
-            <small>
-              Enterprise target: Entra ID identity with governed delivery
-              through Microsoft Graph after GCP deployment.
-            </small>
+            <div className="email-scope-note">
+              <strong>MVP behavior: no email is sent.</strong>
+              <small>
+                This public build creates an on-screen preview only. The
+                enterprise target uses Microsoft SSO identity and governed
+                delivery through Microsoft Graph after GCP deployment.
+              </small>
+            </div>
           </article>
         </div>
       )}
@@ -3081,6 +3122,12 @@ function ControlDrawer({
 }) {
   const [accepted, setAccepted] = useState(control.accepted || false);
   const [understood, setUnderstood] = useState(control.understood || false);
+  const [acknowledgedAt, setAcknowledgedAt] = useState(
+    control.acknowledgedAt || "",
+  );
+  const [acknowledgementSaved, setAcknowledgementSaved] = useState(
+    Boolean(control.accepted && control.understood && control.acknowledgedAt),
+  );
   const [performed, setPerformed] = useState(control.performed || false);
   const [draft, setDraft] = useState(control);
   const [showReassign, setShowReassign] = useState(false);
@@ -3139,6 +3186,7 @@ function ControlDrawer({
       status: "Not started",
       accepted: false,
       understood: false,
+      acknowledgedAt: undefined,
       performed: false,
     });
     appendAudit(
@@ -3148,6 +3196,26 @@ function ControlDrawer({
     );
     notify(`${control.id} reassigned to ${change.toOwner}`);
     close();
+  };
+  const saveAcknowledgement = () => {
+    if (!accepted || !understood) {
+      notify("Confirm ownership and understanding before acknowledging");
+      return;
+    }
+    const timestamp = new Date().toISOString();
+    updateControl(control.id, {
+      accepted: true,
+      understood: true,
+      acknowledgedAt: timestamp,
+    });
+    setAcknowledgedAt(timestamp);
+    setAcknowledgementSaved(true);
+    appendAudit(
+      control.id,
+      "Ownership acknowledged",
+      "Control Owner accepted accountability and confirmed understanding",
+    );
+    notify(`${control.id} ownership acknowledgement saved`);
   };
   const saveDtp = () => {
     updateControl(control.id, {
@@ -3478,11 +3546,19 @@ function ControlDrawer({
                   <span className="section-kicker">Required confirmations</span>
                   <h3>Control Owner acknowledgement</h3>
                 </div>
+                <p className="acknowledgement-intro">
+                  Save this step now to record acceptance and understanding.
+                  You can close the control and return later to perform and
+                  certify it.
+                </p>
                 <label className="check-card">
                   <input
                     type="checkbox"
                     checked={accepted}
-                    onChange={(e) => setAccepted(e.target.checked)}
+                    onChange={(e) => {
+                      setAccepted(e.target.checked);
+                      setAcknowledgementSaved(false);
+                    }}
                   />
                   <span>
                     <strong>I confirm and accept ownership</strong>
@@ -3495,7 +3571,10 @@ function ControlDrawer({
                   <input
                     type="checkbox"
                     checked={understood}
-                    onChange={(e) => setUnderstood(e.target.checked)}
+                    onChange={(e) => {
+                      setUnderstood(e.target.checked);
+                      setAcknowledgementSaved(false);
+                    }}
                   />
                   <span>
                     <strong>I understand the requirement</strong>
@@ -3504,19 +3583,24 @@ function ControlDrawer({
                     </small>
                   </span>
                 </label>
-                <label className="check-card">
-                  <input
-                    type="checkbox"
-                    checked={performed}
-                    onChange={(e) => setPerformed(e.target.checked)}
-                  />
-                  <span>
-                    <strong>The control was performed as documented</strong>
-                    <small>
-                      Exceptions were recorded and escalated where needed.
-                    </small>
-                  </span>
-                </label>
+                <div className="acknowledgement-actions">
+                  <button
+                    className="primary-button"
+                    disabled={
+                      !accepted || !understood || acknowledgementSaved
+                    }
+                    onClick={saveAcknowledgement}
+                  >
+                    {acknowledgementSaved
+                      ? "Acknowledgement saved"
+                      : "Acknowledge & save"}
+                  </button>
+                  {acknowledgementSaved && acknowledgedAt && (
+                    <span className="acknowledgement-saved">
+                      ✓ Recorded {new Date(acknowledgedAt).toLocaleString()}
+                    </span>
+                  )}
+                </div>
               </section>
               <section className="drawer-section">
                 <div>
@@ -3575,6 +3659,23 @@ function ControlDrawer({
                     }}
                   />
                 </label>
+                <div className="execution-confirmation">
+                  <span className="section-kicker">Execution confirmation</span>
+                  <label className="check-card">
+                    <input
+                      type="checkbox"
+                      checked={performed}
+                      onChange={(e) => setPerformed(e.target.checked)}
+                    />
+                    <span>
+                      <strong>The control was performed as documented</strong>
+                      <small>
+                        Complete this only after execution. Exceptions should
+                        be recorded and escalated where needed.
+                      </small>
+                    </span>
+                  </label>
+                </div>
               </section>
               <section className="drawer-section">
                 <div>
@@ -3656,8 +3757,7 @@ function ControlDrawer({
             <button
               className="primary-button"
               disabled={
-                !accepted ||
-                !understood ||
+                !acknowledgementSaved ||
                 !performed ||
                 (draft.evidenceRequired && attachments.length === 0)
               }
@@ -3667,13 +3767,14 @@ function ControlDrawer({
                   due: "Complete",
                   accepted,
                   understood,
+                  acknowledgedAt,
                   performed,
                   certifiedAt: new Date().toISOString(),
                 });
                 appendAudit(
                   draft.id,
                   "Control certified",
-                  "Ownership, understanding and execution acknowledgements confirmed",
+                  "Saved ownership acknowledgement, execution and evidence requirements confirmed",
                 );
                 notify(`${draft.id} certified`);
                 close();

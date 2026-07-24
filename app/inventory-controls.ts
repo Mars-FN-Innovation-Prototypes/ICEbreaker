@@ -32,6 +32,7 @@ export type InventoryControl = {
   dtpDocument: string;
   accepted?: boolean;
   understood?: boolean;
+  acknowledgedAt?: string;
   performed?: boolean;
   certifiedAt?: string;
 };

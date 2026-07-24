@@ -10,6 +10,7 @@ export type ControlExecution = {
   site: string;
   accepted: boolean;
   understood: boolean;
+  acknowledgedAt?: string;
   performed: boolean;
   certifiedAt?: string;
 };
@@ -83,6 +84,7 @@ export const executionFields = new Set<keyof InventoryControl>([
   "site",
   "accepted",
   "understood",
+  "acknowledgedAt",
   "performed",
   "certifiedAt",
 ]);

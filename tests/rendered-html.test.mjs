@@ -62,8 +62,12 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /Admin setup/);
   assert.match(page, /Download CSV/);
   assert.match(page, /I confirm and accept ownership/);
+  assert.match(page, /Acknowledge & save/);
+  assert.match(page, /return later to perform and\s+certify/);
+  assert.match(page, /Ownership acknowledged/);
   assert.match(page, /Desktop procedure/);
   assert.match(page, /Simulated reminder/);
+  assert.match(page, /MVP behavior: no email is sent/);
   assert.match(page, /Help center & 101/);
   assert.match(page, /Leadership.*Site owners.*Controllers/s);
   assert.match(page, /ICEbreaker-101\.docx/);

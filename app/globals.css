@@ -1362,6 +1362,40 @@ tbody tr:hover {
   font-size: 7.5px;
   line-height: 1.35;
 }
+.acknowledgement-intro {
+  margin: 7px 0 10px;
+  padding: 10px 11px;
+  border-left: 3px solid var(--water);
+  border-radius: 0 8px 8px 0;
+  background: #eef7f9;
+  color: #5c696c;
+  font-size: 8px;
+  line-height: 1.5;
+}
+.acknowledgement-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.acknowledgement-actions .primary-button {
+  padding: 10px 13px;
+  border-radius: 9px;
+  font-size: 9px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.acknowledgement-saved {
+  color: #3f7434;
+  font-size: 7.5px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+.execution-confirmation {
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid var(--line);
+}
 .primary-button:disabled {
   cursor: not-allowed;
   opacity: 0.42;
@@ -1924,6 +1958,24 @@ tbody tr:hover {
   color: #173e0e;
   font-size: 9px;
   font-weight: 800;
+}
+.email-scope-note {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 11px 12px;
+  border-left: 3px solid var(--corn);
+  border-radius: 0 9px 9px 0;
+  background: #fff8d9;
+}
+.email-scope-note strong {
+  color: #51481f;
+  font-size: 8.5px;
+}
+.email-scope-note small {
+  color: #726940;
+  font-size: 7.5px;
+  line-height: 1.45;
 }
 
 .drawer-scrim {
