@@ -1,12 +1,31 @@
 "use client";
+/* Static brand assets are intentionally served directly on GitHub Pages. */
+/* eslint-disable @next/next/no-img-element */
 
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import {
   inventoryControls,
   processCounts,
   type ControlStatus,
   type InventoryControl,
 } from "./inventory-controls";
+import {
+  defaultExecution,
+  executionFields,
+  executionKey,
+  type AuditEvent,
+  type ControlExecution,
+  type OwnershipChange,
+  type RemediationGap,
+} from "./control-domain";
+import readXlsxFile from "read-excel-file";
+import writeXlsxFile from "write-excel-file";
 
 type Role = "Controller Admin" | "Control Owner";
 type Nav =
@@ -14,6 +33,7 @@ type Nav =
   | "My controls"
   | "Controls library"
   | "Reports"
+  | "Gap remediation"
   | "Admin setup";
 type Overlay = "help" | "notifications" | "profile" | null;
 type Audience = "Leadership" | "Site owners" | "Controllers";
@@ -26,11 +46,26 @@ type SavedView = {
   audience: Audience;
   region?: string;
   site?: string;
+  owner?: string;
+  controlType?: string;
+  applicability?: string;
+  keyControl?: string;
+  frequency?: string;
 };
 
 const CURRENT_USER = "Demo Account";
 const DEMO_INITIALS = "DA";
 const DEFAULT_SCOPE: ScopeConfig = { regions: ["Europe"], sites: [] };
+const normalizeControl = (control: InventoryControl): InventoryControl => ({
+  ...control,
+  applicable: control.applicable ?? true,
+  dtpSummary: control.dtpSummary || "",
+  dtpOwner: control.dtpOwner || "Controller Admin",
+  dtpVersion: control.dtpVersion || "",
+  dtpLastReviewed: control.dtpLastReviewed || "",
+  dtpNextReview: control.dtpNextReview || "",
+  dtpDocument: control.dtpDocument || "",
+});
 const DEFAULT_VIEWS: SavedView[] = [
   {
     name: "Leadership control health",
@@ -85,6 +120,11 @@ const copy: Record<Nav, { eyebrow: string; title: string; body: string }> = {
     title: "Shape the view around the decision.",
     body: "Filter, visualize, save and download the control insights each audience needs.",
   },
+  "Gap remediation": {
+    eyebrow: "Exception management",
+    title: "Turn every control gap into accountable action.",
+    body: "Assign remediation, track target dates and retain closure evidence with Controller approval.",
+  },
   "Admin setup": {
     eyebrow: "Controller administration",
     title: "Configure the hub as the organization evolves.",
@@ -96,6 +136,7 @@ const adminNav: Array<[Nav, string]> = [
   ["Control tower", "⌁"],
   ["Controls library", "◇"],
   ["Reports", "▤"],
+  ["Gap remediation", "!"],
   ["Admin setup", "⚙"],
 ];
 const ownerNav: Array<[Nav, string]> = [
@@ -137,8 +178,17 @@ function Metric({
 export default function IcebreakerApp() {
   const [role, setRole] = useState<Role>("Controller Admin");
   const [activeNav, setActiveNav] = useState<Nav>("Control tower");
-  const [controls, setControls] =
-    useState<InventoryControl[]>(inventoryControls);
+  const [definitions, setDefinitions] = useState<InventoryControl[]>(
+    inventoryControls.map(normalizeControl),
+  );
+  const [executions, setExecutions] = useState<Record<string, ControlExecution>>(
+    {},
+  );
+  const [ownershipChanges, setOwnershipChanges] = useState<OwnershipChange[]>(
+    [],
+  );
+  const [gaps, setGaps] = useState<RemediationGap[]>([]);
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [selected, setSelected] = useState<InventoryControl | null>(null);
   const [query, setQuery] = useState("");
   const [processFilter, setProcessFilter] = useState("All processes");
@@ -146,6 +196,12 @@ export default function IcebreakerApp() {
   const [evidenceFilter, setEvidenceFilter] = useState("All evidence rules");
   const [regionFilter, setRegionFilter] = useState("All configured regions");
   const [siteFilter, setSiteFilter] = useState("All configured sites");
+  const [ownerFilter, setOwnerFilter] = useState("All owners");
+  const [typeFilter, setTypeFilter] = useState("All control types");
+  const [applicabilityFilter, setApplicabilityFilter] =
+    useState("All applicability");
+  const [keyFilter, setKeyFilter] = useState("All controls");
+  const [frequencyFilter, setFrequencyFilter] = useState("All frequencies");
   const [scopeConfig, setScopeConfig] = useState<ScopeConfig>(DEFAULT_SCOPE);
   const [audience, setAudience] = useState<Audience>("Leadership");
   const [savedViews, setSavedViews] = useState<SavedView[]>(DEFAULT_VIEWS);
@@ -155,11 +211,35 @@ export default function IcebreakerApp() {
   const [period, setPeriod] = useState("July 2026");
   const [hydrated, setHydrated] = useState(false);
 
+  const controls = useMemo(
+    () =>
+      definitions.map((definition) => {
+        const execution =
+          executions[executionKey(period, definition.id)] ||
+          defaultExecution(definition, period);
+        return { ...definition, ...execution };
+      }),
+    [definitions, executions, period],
+  );
+
   useEffect(() => {
     const hydrate = window.setTimeout(() => {
       try {
         const storedControls = window.localStorage.getItem(
           "icebreaker-controls",
+        );
+        const storedDefinitions = window.localStorage.getItem(
+          "icebreaker-control-definitions",
+        );
+        const storedExecutions = window.localStorage.getItem(
+          "icebreaker-executions",
+        );
+        const storedOwnershipChanges = window.localStorage.getItem(
+          "icebreaker-ownership-changes",
+        );
+        const storedGaps = window.localStorage.getItem("icebreaker-gaps");
+        const storedAudit = window.localStorage.getItem(
+          "icebreaker-audit-events",
         );
         const storedViews = window.localStorage.getItem(
           "icebreaker-saved-views",
@@ -168,17 +248,39 @@ export default function IcebreakerApp() {
           "icebreaker-attachments",
         );
         const storedScope = window.localStorage.getItem("icebreaker-scope");
-        if (storedControls) {
+        if (storedDefinitions) {
+          setDefinitions(
+            (JSON.parse(storedDefinitions) as InventoryControl[]).map(
+              normalizeControl,
+            ),
+          );
+        } else if (storedControls) {
           const parsed: InventoryControl[] = JSON.parse(storedControls);
-          setControls(
-            parsed.map((control) => ({
-              ...control,
-              owner:
-                control.owner === "Unassigned" ? "Unassigned" : CURRENT_USER,
-              site: control.site || "",
-            })),
+          setDefinitions(parsed.map(normalizeControl));
+          setExecutions(
+            Object.fromEntries(
+              parsed.map((control) => [
+                executionKey("July 2026", control.id),
+                {
+                  ...defaultExecution(control, "July 2026"),
+                  owner:
+                    control.owner === "Unassigned"
+                      ? "Unassigned"
+                      : CURRENT_USER,
+                  status: control.status,
+                  due: control.due,
+                  region: control.region || "Europe",
+                  site: control.site || "",
+                },
+              ]),
+            ),
           );
         }
+        if (storedExecutions) setExecutions(JSON.parse(storedExecutions));
+        if (storedOwnershipChanges)
+          setOwnershipChanges(JSON.parse(storedOwnershipChanges));
+        if (storedGaps) setGaps(JSON.parse(storedGaps));
+        if (storedAudit) setAuditEvents(JSON.parse(storedAudit));
         if (storedViews) setSavedViews(JSON.parse(storedViews));
         if (storedAttachments) setAttachments(JSON.parse(storedAttachments));
         if (storedScope) setScopeConfig(JSON.parse(storedScope));
@@ -192,10 +294,30 @@ export default function IcebreakerApp() {
   useEffect(() => {
     if (!hydrated) return;
     window.localStorage.setItem(
-      "icebreaker-controls",
-      JSON.stringify(controls),
+      "icebreaker-control-definitions",
+      JSON.stringify(definitions),
     );
-  }, [controls, hydrated]);
+    window.localStorage.setItem(
+      "icebreaker-executions",
+      JSON.stringify(executions),
+    );
+    window.localStorage.setItem(
+      "icebreaker-ownership-changes",
+      JSON.stringify(ownershipChanges),
+    );
+    window.localStorage.setItem("icebreaker-gaps", JSON.stringify(gaps));
+    window.localStorage.setItem(
+      "icebreaker-audit-events",
+      JSON.stringify(auditEvents),
+    );
+  }, [
+    definitions,
+    executions,
+    ownershipChanges,
+    gaps,
+    auditEvents,
+    hydrated,
+  ]);
   useEffect(() => {
     if (!hydrated) return;
     window.localStorage.setItem(
@@ -239,6 +361,18 @@ export default function IcebreakerApp() {
           (siteFilter === "All configured sites" ||
             !scopeConfig.sites.includes(siteFilter) ||
             control.site === siteFilter) &&
+          (ownerFilter === "All owners" || control.owner === ownerFilter) &&
+          (typeFilter === "All control types" || control.type === typeFilter) &&
+          (applicabilityFilter === "All applicability" ||
+            (applicabilityFilter === "Applicable"
+              ? control.applicable
+              : !control.applicable)) &&
+          (keyFilter === "All controls" ||
+            (keyFilter === "Key controls"
+              ? control.keyControl
+              : !control.keyControl)) &&
+          (frequencyFilter === "All frequencies" ||
+            control.frequency === frequencyFilter) &&
           (evidenceFilter === "All evidence rules" ||
             (evidenceFilter === "Evidence required"
               ? control.evidenceRequired
@@ -254,6 +388,11 @@ export default function IcebreakerApp() {
       regionFilter,
       siteFilter,
       scopeConfig,
+      ownerFilter,
+      typeFilter,
+      applicabilityFilter,
+      keyFilter,
+      frequencyFilter,
     ],
   );
 
@@ -262,15 +401,83 @@ export default function IcebreakerApp() {
     setToast(message);
     window.setTimeout(() => setToast(""), 2600);
   };
+  const appendAudit = (
+    controlId: string,
+    action: string,
+    detail: string,
+  ) => {
+    setAuditEvents((current) => [
+      {
+        id: crypto.randomUUID(),
+        controlId,
+        period,
+        action,
+        actor: CURRENT_USER,
+        timestamp: new Date().toISOString(),
+        detail,
+      },
+      ...current,
+    ]);
+  };
   const updateControl = (id: string, updates: Partial<InventoryControl>) => {
-    setControls((current) =>
-      current.map((control) =>
-        control.id === id ? { ...control, ...updates } : control,
-      ),
-    );
+    const definitionUpdates: Partial<InventoryControl> = {};
+    const executionUpdates: Partial<ControlExecution> = {};
+    Object.entries(updates).forEach(([key, value]) => {
+      if (executionFields.has(key as keyof InventoryControl)) {
+        Object.assign(executionUpdates, { [key]: value });
+      } else {
+        Object.assign(definitionUpdates, { [key]: value });
+      }
+    });
+    if (Object.keys(definitionUpdates).length) {
+      setDefinitions((current) =>
+        current.map((control) =>
+          control.id === id ? { ...control, ...definitionUpdates } : control,
+        ),
+      );
+    }
+    if (Object.keys(executionUpdates).length) {
+      const definition =
+        definitions.find((control) => control.id === id) ||
+        inventoryControls.find((control) => control.id === id);
+      if (definition) {
+        setExecutions((current) => {
+          const key = executionKey(period, id);
+          return {
+            ...current,
+            [key]: {
+              ...(current[key] || defaultExecution(definition, period)),
+              ...executionUpdates,
+            },
+          };
+        });
+      }
+    }
     setSelected((current) =>
       current?.id === id ? { ...current, ...updates } : current,
     );
+  };
+  const setControls = (next: InventoryControl[]) => {
+    setDefinitions(next.map(normalizeControl));
+    setExecutions((current) => {
+      const updated = { ...current };
+      next.forEach((control) => {
+        updated[executionKey(period, control.id)] = {
+          ...(current[executionKey(period, control.id)] ||
+            defaultExecution(control, period)),
+          owner: control.owner,
+          status: control.status,
+          due: control.due,
+          region: control.region,
+          site: control.site,
+          accepted: control.accepted || false,
+          understood: control.understood || false,
+          performed: control.performed || false,
+          certifiedAt: control.certifiedAt,
+        };
+      });
+      return updated;
+    });
   };
   const changeRole = (next: Role) => {
     setRole(next);
@@ -285,6 +492,9 @@ export default function IcebreakerApp() {
         "Control name",
         "Sub-process",
         "Frequency",
+        "Control type",
+        "Key control",
+        "Applicable",
         "Evidence required",
         "Control Owner",
         "Region",
@@ -297,6 +507,9 @@ export default function IcebreakerApp() {
         c.name,
         c.process,
         c.frequency,
+        c.type,
+        c.keyControl ? "Yes" : "No",
+        c.applicable ? "Yes" : "No",
         c.evidenceRequired ? "Yes" : "No",
         c.owner,
         c.region,
@@ -430,7 +643,7 @@ export default function IcebreakerApp() {
                 onChange={(event) => {
                   setPeriod(event.target.value);
                   notify(
-                    `${event.target.value} selected · demo control data is shared across periods`,
+                    `${event.target.value} selected · execution and evidence are tracked separately`,
                   );
                 }}
               >
@@ -476,6 +689,7 @@ export default function IcebreakerApp() {
           {activeNav === "Reports" && (
             <Reports
               controls={filtered}
+              availableControls={controls}
               processFilter={processFilter}
               setProcessFilter={setProcessFilter}
               statusFilter={statusFilter}
@@ -486,6 +700,16 @@ export default function IcebreakerApp() {
               setRegionFilter={setRegionFilter}
               siteFilter={siteFilter}
               setSiteFilter={setSiteFilter}
+              ownerFilter={ownerFilter}
+              setOwnerFilter={setOwnerFilter}
+              typeFilter={typeFilter}
+              setTypeFilter={setTypeFilter}
+              applicabilityFilter={applicabilityFilter}
+              setApplicabilityFilter={setApplicabilityFilter}
+              keyFilter={keyFilter}
+              setKeyFilter={setKeyFilter}
+              frequencyFilter={frequencyFilter}
+              setFrequencyFilter={setFrequencyFilter}
               scopeConfig={scopeConfig}
               audience={audience}
               setAudience={setAudience}
@@ -494,6 +718,18 @@ export default function IcebreakerApp() {
               downloadReport={downloadReport}
               notify={notify}
               openControl={setSelected}
+              ownershipChanges={ownershipChanges}
+              auditEvents={auditEvents}
+            />
+          )}
+          {activeNav === "Gap remediation" && (
+            <GapRemediation
+              gaps={gaps}
+              controls={controls}
+              updateGaps={setGaps}
+              notify={notify}
+              appendAudit={appendAudit}
+              period={period}
             />
           )}
           {activeNav === "Admin setup" && (
@@ -515,18 +751,29 @@ export default function IcebreakerApp() {
         <ControlDrawer
           control={selected}
           role={role}
-          attachments={attachments[selected.id] || []}
+          period={period}
+          attachments={
+            attachments[executionKey(period, selected.id)] || []
+          }
           close={() => setSelected(null)}
           updateControl={updateControl}
           addAttachment={(name) =>
             setAttachments((current) => ({
               ...current,
-              [selected.id]: [...(current[selected.id] || []), name],
+              [executionKey(period, selected.id)]: [
+                ...(current[executionKey(period, selected.id)] || []),
+                name,
+              ],
             }))
           }
           notify={notify}
           changeRole={changeRole}
           scopeConfig={scopeConfig}
+          ownershipChanges={ownershipChanges}
+          setOwnershipChanges={setOwnershipChanges}
+          gaps={gaps}
+          setGaps={setGaps}
+          appendAudit={appendAudit}
         />
       )}
       {overlay && (
@@ -1105,6 +1352,7 @@ function ControlsLibrary({
 
 function Reports({
   controls,
+  availableControls,
   processFilter,
   setProcessFilter,
   statusFilter,
@@ -1115,6 +1363,16 @@ function Reports({
   setRegionFilter,
   siteFilter,
   setSiteFilter,
+  ownerFilter,
+  setOwnerFilter,
+  typeFilter,
+  setTypeFilter,
+  applicabilityFilter,
+  setApplicabilityFilter,
+  keyFilter,
+  setKeyFilter,
+  frequencyFilter,
+  setFrequencyFilter,
   scopeConfig,
   audience,
   setAudience,
@@ -1123,8 +1381,11 @@ function Reports({
   downloadReport,
   notify,
   openControl,
+  ownershipChanges,
+  auditEvents,
 }: {
   controls: InventoryControl[];
+  availableControls: InventoryControl[];
   processFilter: string;
   setProcessFilter: (v: string) => void;
   statusFilter: string;
@@ -1135,6 +1396,16 @@ function Reports({
   setRegionFilter: (v: string) => void;
   siteFilter: string;
   setSiteFilter: (v: string) => void;
+  ownerFilter: string;
+  setOwnerFilter: (v: string) => void;
+  typeFilter: string;
+  setTypeFilter: (v: string) => void;
+  applicabilityFilter: string;
+  setApplicabilityFilter: (v: string) => void;
+  keyFilter: string;
+  setKeyFilter: (v: string) => void;
+  frequencyFilter: string;
+  setFrequencyFilter: (v: string) => void;
   scopeConfig: ScopeConfig;
   audience: Audience;
   setAudience: (v: Audience) => void;
@@ -1143,7 +1414,18 @@ function Reports({
   downloadReport: () => void;
   notify: (m: string) => void;
   openControl: (c: InventoryControl) => void;
+  ownershipChanges: OwnershipChange[];
+  auditEvents: AuditEvent[];
 }) {
+  const owners = Array.from(
+    new Set(availableControls.map((c) => c.owner)),
+  ).sort();
+  const controlTypes = Array.from(
+    new Set(availableControls.map((c) => c.type)),
+  ).sort();
+  const frequencies = Array.from(
+    new Set(availableControls.map((c) => c.frequency)),
+  ).sort();
   const save = () => {
     const name = window
       .prompt(
@@ -1162,6 +1444,11 @@ function Reports({
         audience,
         region: regionFilter,
         site: siteFilter,
+        owner: ownerFilter,
+        controlType: typeFilter,
+        applicability: applicabilityFilter,
+        keyControl: keyFilter,
+        frequency: frequencyFilter,
       },
     ]);
     notify(`Saved “${name}”`);
@@ -1172,6 +1459,11 @@ function Reports({
     setEvidenceFilter(view.evidence);
     setRegionFilter(view.region || "All configured regions");
     setSiteFilter(view.site || "All configured sites");
+    setOwnerFilter(view.owner || "All owners");
+    setTypeFilter(view.controlType || "All control types");
+    setApplicabilityFilter(view.applicability || "All applicability");
+    setKeyFilter(view.keyControl || "All controls");
+    setFrequencyFilter(view.frequency || "All frequencies");
     setAudience(view.audience);
     notify(`Loaded “${view.name}”`);
   };
@@ -1247,7 +1539,7 @@ function Reports({
             </label>
             <label>
               Business process
-              <select>
+              <select disabled>
                 <option>All processes</option>
                 <option>Inventory</option>
               </select>
@@ -1285,6 +1577,64 @@ function Reports({
                 <option>All evidence rules</option>
                 <option>Evidence required</option>
                 <option>Certification only</option>
+              </select>
+            </label>
+            <label>
+              Control Owner
+              <select
+                value={ownerFilter}
+                onChange={(e) => setOwnerFilter(e.target.value)}
+              >
+                <option>All owners</option>
+                {owners.map((owner) => (
+                  <option key={owner}>{owner}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Control type
+              <select
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}
+              >
+                <option>All control types</option>
+                {controlTypes.map((type) => (
+                  <option key={type}>{type}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Applicability
+              <select
+                value={applicabilityFilter}
+                onChange={(e) => setApplicabilityFilter(e.target.value)}
+              >
+                <option>All applicability</option>
+                <option>Applicable</option>
+                <option>Not applicable</option>
+              </select>
+            </label>
+            <label>
+              Key control
+              <select
+                value={keyFilter}
+                onChange={(e) => setKeyFilter(e.target.value)}
+              >
+                <option>All controls</option>
+                <option>Key controls</option>
+                <option>Non-key controls</option>
+              </select>
+            </label>
+            <label>
+              Frequency
+              <select
+                value={frequencyFilter}
+                onChange={(e) => setFrequencyFilter(e.target.value)}
+              >
+                <option>All frequencies</option>
+                {frequencies.map((frequency) => (
+                  <option key={frequency}>{frequency}</option>
+                ))}
               </select>
             </label>
           </div>
@@ -1332,6 +1682,66 @@ function Reports({
           ))}
         </aside>
       </div>
+      {audience === "Controllers" && (
+        <div className="report-layout">
+          <article className="panel ownership-history">
+            <div className="panel-heading">
+              <div>
+                <span className="section-kicker">Accountability trail</span>
+                <h2>Recent ownership changes</h2>
+              </div>
+              <span>{ownershipChanges.length} recorded</span>
+            </div>
+            {ownershipChanges.length ? (
+              ownershipChanges.slice(0, 8).map((change) => (
+                <div className="change-row" key={change.id}>
+                  <span>{change.controlId}</span>
+                  <strong>
+                    {change.fromOwner} → {change.toOwner}
+                  </strong>
+                  <small>
+                    {change.period} · Handover{" "}
+                    {change.handoverConfirmed ? "confirmed" : "missing"} ·
+                    Training{" "}
+                    {change.trainingConfirmed ? "confirmed" : "missing"}
+                  </small>
+                </div>
+              ))
+            ) : (
+              <div className="empty-state">
+                <strong>No ownership changes recorded.</strong>
+                <span>Confirmed reassignments will appear here.</span>
+              </div>
+            )}
+          </article>
+          <article className="panel ownership-history">
+            <div className="panel-heading">
+              <div>
+                <span className="section-kicker">Audit trail</span>
+                <h2>Recent control activity</h2>
+              </div>
+              <span>{auditEvents.length} events</span>
+            </div>
+            {auditEvents.length ? (
+              auditEvents.slice(0, 8).map((event) => (
+                <div className="change-row" key={event.id}>
+                  <span>{event.controlId}</span>
+                  <strong>{event.action}</strong>
+                  <small>
+                    {event.period} · {event.actor} ·{" "}
+                    {new Date(event.timestamp).toLocaleString()}
+                  </small>
+                </div>
+              ))
+            ) : (
+              <div className="empty-state">
+                <strong>No control activity recorded.</strong>
+                <span>Certifications and material changes will appear here.</span>
+              </div>
+            )}
+          </article>
+        </div>
+      )}
       <ControlTable
         controls={controls.slice(0, 10)}
         title="Report preview"
@@ -1604,6 +2014,248 @@ function SiteOwnerDashboard({
   );
 }
 
+function GapRemediation({
+  gaps,
+  controls,
+  updateGaps,
+  notify,
+  appendAudit,
+  period,
+}: {
+  gaps: RemediationGap[];
+  controls: InventoryControl[];
+  updateGaps: Dispatch<SetStateAction<RemediationGap[]>>;
+  notify: (m: string) => void;
+  appendAudit: (controlId: string, action: string, detail: string) => void;
+  period: string;
+}) {
+  const [newGap, setNewGap] = useState({
+    controlId: controls[0]?.id || "",
+    title: "",
+    description: "",
+    severity: "Medium" as RemediationGap["severity"],
+    owner: CURRENT_USER,
+    due: "",
+  });
+  const addGap = () => {
+    if (!newGap.controlId || !newGap.title.trim() || !newGap.due) {
+      notify("Select a control, add a gap title and target date");
+      return;
+    }
+    const gap: RemediationGap = {
+      id: crypto.randomUUID(),
+      ...newGap,
+      title: newGap.title.trim(),
+      description: newGap.description.trim(),
+      period,
+      status: "Open",
+      closureEvidence: "",
+      controllerApproved: false,
+      createdAt: new Date().toISOString(),
+    };
+    updateGaps((current) => [gap, ...current]);
+    appendAudit(gap.controlId, "Gap logged", gap.title);
+    setNewGap({ ...newGap, title: "", description: "", due: "" });
+    notify(`Gap logged for ${gap.controlId}`);
+  };
+  const updateGap = (id: string, updates: Partial<RemediationGap>) =>
+    updateGaps((current) =>
+      current.map((gap) => (gap.id === id ? { ...gap, ...updates } : gap)),
+    );
+  const openGaps = gaps.filter((gap) => gap.status !== "Closed");
+  const overdue = openGaps.filter(
+    (gap) => gap.due && new Date(gap.due) < new Date(),
+  );
+  return (
+    <section className="workspace-view">
+      <div className="admin-summary">
+        <span>
+          <strong>{openGaps.length}</strong> open gaps
+        </span>
+        <span>
+          <strong>
+            {
+              openGaps.filter(
+                (gap) =>
+                  gap.severity === "High" || gap.severity === "Critical",
+              ).length
+            }
+          </strong>{" "}
+          high / critical
+        </span>
+        <span>
+          <strong>{overdue.length}</strong> overdue
+        </span>
+      </div>
+      <article className="panel setup-card gap-create">
+        <div className="panel-heading">
+          <div>
+            <span className="section-kicker">Controller action</span>
+            <h2>Log a remediation gap</h2>
+          </div>
+        </div>
+        <div className="report-filters">
+          <label>
+            Control
+            <select
+              value={newGap.controlId}
+              onChange={(e) =>
+                setNewGap({ ...newGap, controlId: e.target.value })
+              }
+            >
+              {controls.map((control) => (
+                <option value={control.id} key={control.id}>
+                  {control.id} · {control.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Severity
+            <select
+              value={newGap.severity}
+              onChange={(e) =>
+                setNewGap({
+                  ...newGap,
+                  severity: e.target.value as RemediationGap["severity"],
+                })
+              }
+            >
+              <option>Low</option>
+              <option>Medium</option>
+              <option>High</option>
+              <option>Critical</option>
+            </select>
+          </label>
+          <label>
+            Remediation owner
+            <input
+              value={newGap.owner}
+              onChange={(e) => setNewGap({ ...newGap, owner: e.target.value })}
+            />
+          </label>
+          <label>
+            Target date
+            <input
+              type="date"
+              value={newGap.due}
+              onChange={(e) => setNewGap({ ...newGap, due: e.target.value })}
+            />
+          </label>
+        </div>
+        <label>
+          Gap title
+          <input
+            value={newGap.title}
+            onChange={(e) => setNewGap({ ...newGap, title: e.target.value })}
+            placeholder="Describe the control exception"
+          />
+        </label>
+        <label>
+          Remediation action
+          <textarea
+            value={newGap.description}
+            onChange={(e) =>
+              setNewGap({ ...newGap, description: e.target.value })
+            }
+            placeholder="What needs to change, and what will good closure look like?"
+          />
+        </label>
+        <button className="primary-small" onClick={addGap}>
+          Create remediation
+        </button>
+      </article>
+      <div className="gap-list">
+        {gaps.map((gap) => (
+          <article className="panel setup-card" key={gap.id}>
+            <div className="panel-heading">
+              <div>
+                <span className="section-kicker">
+                  {gap.controlId} · {gap.severity}
+                </span>
+                <h2>{gap.title}</h2>
+              </div>
+              <span className={`status ${gap.status === "Closed" ? "success" : "warning"}`}>
+                {gap.status}
+              </span>
+            </div>
+            <p>{gap.description || "Remediation detail to be confirmed."}</p>
+            <div className="detail-grid">
+              <div>
+                <span>Owner</span>
+                <strong>{gap.owner}</strong>
+              </div>
+              <div>
+                <span>Target date</span>
+                <strong>{gap.due}</strong>
+              </div>
+            </div>
+            <div className="report-filters">
+              <label>
+                Status
+                <select
+                  value={gap.status}
+                  onChange={(e) => {
+                    const status = e.target.value as RemediationGap["status"];
+                    if (
+                      status === "Closed" &&
+                      (!gap.closureEvidence || !gap.controllerApproved)
+                    ) {
+                      notify(
+                        "Closure evidence and Controller approval are required",
+                      );
+                      return;
+                    }
+                    updateGap(gap.id, { status });
+                    appendAudit(
+                      gap.controlId,
+                      "Gap status changed",
+                      `${gap.title}: ${status}`,
+                    );
+                  }}
+                >
+                  <option>Open</option>
+                  <option>In progress</option>
+                  <option>Ready for closure</option>
+                  <option>Closed</option>
+                </select>
+              </label>
+              <label>
+                Closure evidence reference
+                <input
+                  value={gap.closureEvidence}
+                  onChange={(e) =>
+                    updateGap(gap.id, { closureEvidence: e.target.value })
+                  }
+                  placeholder="File name, ticket or link"
+                />
+              </label>
+              <label className="admin-check">
+                <input
+                  type="checkbox"
+                  checked={gap.controllerApproved}
+                  onChange={(e) =>
+                    updateGap(gap.id, {
+                      controllerApproved: e.target.checked,
+                    })
+                  }
+                />
+                Controller closure approval
+              </label>
+            </div>
+          </article>
+        ))}
+        {!gaps.length && (
+          <div className="panel empty-state">
+            <strong>No remediation gaps logged.</strong>
+            <span>Use the form above when an exception requires action.</span>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function AdminSetup({
   controls,
   setControls,
@@ -1627,6 +2279,15 @@ function AdminSetup({
   const [region, setRegion] = useState("");
   const [site, setSite] = useState("");
   const [reminderLog, setReminderLog] = useState("");
+  const [importPreview, setImportPreview] = useState<{
+    rows: Record<string, string>[];
+    errors: string[];
+  } | null>(null);
+  const [newControl, setNewControl] = useState({
+    id: "",
+    name: "",
+    process: "Manufacturing",
+  });
   const addScope = (
     kind: keyof ScopeConfig,
     value: string,
@@ -1668,31 +2329,106 @@ function AdminSetup({
     }
     notify(`${value} removed`);
   };
-  const downloadTemplate = () => {
-    const csv =
-      "Control ID,Control Owner,Region,Site,Due Date,Evidence Required\nINV.MF.01,Demo Account,Europe,Poznan Factory,,Yes";
-    const href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-    const link = document.createElement("a");
-    link.href = href;
-    link.download = "ICEbreaker-admin-upload-template.csv";
-    link.click();
-    URL.revokeObjectURL(href);
+  const downloadTemplate = async () => {
+    const headers = [
+      "Control ID",
+      "Control Name",
+      "Sub-process",
+      "Frequency",
+      "Control Type",
+      "Nature",
+      "Key Control (Y/N)",
+      "Applicable (Y/N)",
+      "Evidence Needed (Y/N)",
+      "Control Owner",
+      "Region",
+      "Site",
+      "Due Date",
+    ];
+    await writeXlsxFile(
+      [
+        headers.map((value) => ({ value, fontWeight: "bold" as const })),
+        [
+          "INV.MF.01",
+          "Creation and Changes to Bill of Materials",
+          "Manufacturing",
+          "Event Based",
+          "Manual with IT Dependency",
+          "Preventive",
+          "Y",
+          "Y",
+          "Y",
+          CURRENT_USER,
+          "Europe",
+          "Poznan Factory",
+          "2026-07-31",
+        ].map((value) => ({ value })),
+      ],
+      { fileName: "ICEbreaker-admin-upload-template.xlsx" },
+    );
+    notify("Excel mass-upload template downloaded");
   };
-  const importCsv = async (file?: File) => {
+  const importWorkbook = async (file?: File) => {
     if (!file) return;
-    const lines = (await file.text()).split(/\r?\n/).filter(Boolean);
-    const headers =
-      lines
-        .shift()
-        ?.split(",")
-        .map((h) => h.trim()) || [];
+    const sheet = await readXlsxFile(file);
+    const headers = (sheet.shift() || []).map((value) =>
+      String(value || "").trim(),
+    );
+    const required = [
+      "Control ID",
+      "Control Name",
+      "Sub-process",
+      "Frequency",
+      "Evidence Needed (Y/N)",
+    ];
+    const missing = required.filter((header) => !headers.includes(header));
+    const rows = sheet
+      .filter((row) => row.some((value) => value !== null && value !== ""))
+      .map((row) =>
+        headers.map((header, index) => {
+          const value = row[index];
+          return value instanceof Date
+            ? value.toISOString().slice(0, 10)
+            : String(value ?? "").trim();
+        }),
+      );
+    const errors = missing.map((header) => `Missing column: ${header}`);
+    const seen = new Set<string>();
+    rows.forEach((cells, index) => {
+      const id = cells[headers.indexOf("Control ID")];
+      if (!id) errors.push(`Row ${index + 2}: Control ID is required`);
+      if (seen.has(id)) errors.push(`Row ${index + 2}: duplicate Control ID`);
+      seen.add(id);
+      if (
+        !controls.some((control) => control.id === id) &&
+        (!cells[headers.indexOf("Control Name")] ||
+          !cells[headers.indexOf("Sub-process")] ||
+          !cells[headers.indexOf("Frequency")])
+      )
+        errors.push(
+          `Row ${index + 2}: new controls require name, sub-process and frequency`,
+        );
+    });
+    setImportPreview({
+      rows: rows.map((cells) =>
+        Object.fromEntries(headers.map((header, index) => [header, cells[index]])),
+      ),
+      errors,
+    });
+    if (errors.length) {
+      notify(`Excel checked · ${errors.length} issues to resolve`);
+      return;
+    }
+    notify(`Excel checked · ${rows.length} rows ready to apply`);
+  };
+  const applyImport = () => {
+    if (!importPreview || importPreview.errors.length) return;
+    const headers = Object.keys(importPreview.rows[0] || {});
     const imported = new Map(
-      lines.map((line) => {
-        const cells = line
-          .split(",")
-          .map((cell) => cell.trim().replace(/^"|"$/g, ""));
-        return [cells[headers.indexOf("Control ID")], cells];
-      }),
+      importPreview.rows.map((row) => [
+        row["Control ID"],
+        headers.map((header) => row[header]),
+      ]),
     );
     const importedSites = Array.from(imported.values())
       .map((row) => row[headers.indexOf("Site")])
@@ -1703,32 +2439,131 @@ function AdminSetup({
         sites: Array.from(new Set([...scopeConfig.sites, ...importedSites])),
       });
     }
-    setControls(
-      controls.map((control) => {
+    const yes = (value: string, fallback: boolean) =>
+      value ? ["Y", "YES"].includes(value.toUpperCase()) : fallback;
+    const existing = controls.map((control) => {
         const row = imported.get(control.id);
         if (!row) return control;
+        imported.delete(control.id);
         const requestedOwner = row[headers.indexOf("Control Owner")];
         const owner = requestedOwner ? CURRENT_USER : "Unassigned";
-        return {
+        return normalizeControl({
           ...control,
+          name: row[headers.indexOf("Control Name")] || control.name,
+          process: row[headers.indexOf("Sub-process")] || control.process,
+          frequency: row[headers.indexOf("Frequency")] || control.frequency,
+          type: row[headers.indexOf("Control Type")] || control.type,
+          nature:
+            row[headers.indexOf("Nature")] === "Detective"
+              ? "Detective"
+              : control.nature,
+          keyControl: yes(
+            row[headers.indexOf("Key Control (Y/N)")],
+            control.keyControl,
+          ),
+          applicable: yes(
+            row[headers.indexOf("Applicable (Y/N)")],
+            control.applicable,
+          ),
           owner,
           region: row[headers.indexOf("Region")] || control.region,
           site: row[headers.indexOf("Site")] || control.site,
           unit: "Food & Nutrition",
           due: row[headers.indexOf("Due Date")] || control.due,
           evidenceRequired:
-            (
-              row[headers.indexOf("Evidence Required")] || "Yes"
-            ).toLowerCase() === "yes",
+            yes(
+              row[headers.indexOf("Evidence Needed (Y/N)")],
+              control.evidenceRequired,
+            ),
           status: owner === "Unassigned" ? "Unassigned" : "Not started",
-        };
+        });
+      });
+    const added = Array.from(imported.values()).map((row) =>
+      normalizeControl({
+        id: row[headers.indexOf("Control ID")],
+        name: row[headers.indexOf("Control Name")],
+        process: row[headers.indexOf("Sub-process")],
+        frequency: row[headers.indexOf("Frequency")],
+        type: row[headers.indexOf("Control Type")] || "Manual",
+        nature:
+          row[headers.indexOf("Nature")] === "Detective"
+            ? "Detective"
+            : "Preventive",
+        keyControl: yes(row[headers.indexOf("Key Control (Y/N)")], false),
+        applicable: yes(row[headers.indexOf("Applicable (Y/N)")], true),
+        evidenceRequired: yes(
+          row[headers.indexOf("Evidence Needed (Y/N)")],
+          true,
+        ),
+        owner: row[headers.indexOf("Control Owner")]
+          ? CURRENT_USER
+          : "Unassigned",
+        status: row[headers.indexOf("Control Owner")]
+          ? "Not started"
+          : "Unassigned",
+        due: row[headers.indexOf("Due Date")] || "Not scheduled",
+        dtpStatus: "Not added",
+        region: row[headers.indexOf("Region")] || "Europe",
+        site: row[headers.indexOf("Site")] || "",
+        unit: "Food & Nutrition",
+        instructions: "",
+        dtpSummary: "",
+        dtpOwner: "Controller Admin",
+        dtpVersion: "",
+        dtpLastReviewed: "",
+        dtpNextReview: "",
+        dtpDocument: "",
       }),
     );
+    setControls([...existing, ...added]);
+    setImportPreview(null);
     notify(
-      `${imported.size} control rows imported · assignments mapped to Demo Account`,
+      `${importPreview.rows.length} control rows imported · assignments mapped to Demo Account`,
     );
   };
   const assigned = controls.filter((c) => c.owner !== "Unassigned").length;
+  const addControl = () => {
+    const id = newControl.id.trim().toUpperCase();
+    const name = newControl.name.trim();
+    if (!id || !name) {
+      notify("Control ID and name are required");
+      return;
+    }
+    if (controls.some((control) => control.id === id)) {
+      notify(`${id} already exists`);
+      return;
+    }
+    setControls([
+      ...controls,
+      normalizeControl({
+        id,
+        name,
+        process: newControl.process.trim() || "Inventory",
+        frequency: "Periodic",
+        keyControl: false,
+        nature: "Preventive",
+        type: "Manual",
+        evidenceRequired: true,
+        owner: "Unassigned",
+        status: "Unassigned",
+        due: "Not scheduled",
+        dtpStatus: "Not added",
+        region: "Europe",
+        site: "",
+        unit: "Food & Nutrition",
+        instructions: "",
+        applicable: true,
+        dtpSummary: "",
+        dtpOwner: "Controller Admin",
+        dtpVersion: "",
+        dtpLastReviewed: "",
+        dtpNextReview: "",
+        dtpDocument: "",
+      }),
+    ]);
+    setNewControl({ id: "", name: "", process: "Manufacturing" });
+    notify(`${id} added to the control library`);
+  };
   return (
     <section className="workspace-view">
       <div className="admin-tabs">
@@ -1832,20 +2667,40 @@ function AdminSetup({
             </div>
             <label className="upload-zone file-card">
               <span>⇧</span>
-              <strong>Choose a completed CSV template</strong>
+              <strong>Choose a completed Excel template</strong>
               <small>
                 Controls, applicability, Control Owners and due-date rules
               </small>
               <b>Choose file</b>
               <input
                 type="file"
-                accept=".csv,text/csv"
-                onChange={(e) => importCsv(e.target.files?.[0])}
+                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                onChange={(e) => importWorkbook(e.target.files?.[0])}
               />
             </label>
             <button className="template-link" onClick={downloadTemplate}>
               ⇩ Download mass-upload template
             </button>
+            {importPreview && (
+              <div className="import-preview">
+                <strong>
+                  {importPreview.rows.length} rows checked ·{" "}
+                  {importPreview.errors.length
+                    ? `${importPreview.errors.length} issues`
+                    : "ready to apply"}
+                </strong>
+                {importPreview.errors.map((error) => (
+                  <small key={error}>{error}</small>
+                ))}
+                <button
+                  className="primary-small"
+                  disabled={Boolean(importPreview.errors.length)}
+                  onClick={applyImport}
+                >
+                  Apply validated import
+                </button>
+              </div>
+            )}
           </article>
         </div>
       )}
@@ -1874,6 +2729,40 @@ function AdminSetup({
                 <span className="section-kicker">Admin editable</span>
                 <h2>Evidence, instructions & DTP</h2>
               </div>
+              <button className="primary-small" onClick={addControl}>
+                Add control
+              </button>
+            </div>
+            <div className="report-filters new-control-form">
+              <label>
+                Control ID
+                <input
+                  value={newControl.id}
+                  onChange={(e) =>
+                    setNewControl({ ...newControl, id: e.target.value })
+                  }
+                  placeholder="INV.XX.01"
+                />
+              </label>
+              <label>
+                Control name
+                <input
+                  value={newControl.name}
+                  onChange={(e) =>
+                    setNewControl({ ...newControl, name: e.target.value })
+                  }
+                  placeholder="Control requirement"
+                />
+              </label>
+              <label>
+                Sub-process
+                <input
+                  value={newControl.process}
+                  onChange={(e) =>
+                    setNewControl({ ...newControl, process: e.target.value })
+                  }
+                />
+              </label>
             </div>
             {controls.slice(0, 10).map((control) => (
               <div className="requirement-row" key={control.id}>
@@ -1900,6 +2789,23 @@ function AdminSetup({
                   onClick={() => openControl(control)}
                 >
                   Manage guidance
+                </button>
+                <button
+                  className="manage-button danger-link"
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        `Remove ${control.id} from the control library?`,
+                      )
+                    ) {
+                      setControls(
+                        controls.filter((item) => item.id !== control.id),
+                      );
+                      notify(`${control.id} removed`);
+                    }
+                  }}
+                >
+                  Remove
                 </button>
                 <span
                   className={`dtp-badge ${control.dtpStatus === "Current" ? "current" : "needs"}`}
@@ -2035,6 +2941,10 @@ function AdminSetup({
               {reminderLog ||
                 "Generate a preview to record a simulated reminder."}
             </small>
+            <small>
+              Enterprise target: Entra ID identity with governed delivery
+              through Microsoft Graph after GCP deployment.
+            </small>
           </article>
         </div>
       )}
@@ -2045,6 +2955,7 @@ function AdminSetup({
 function ControlDrawer({
   control,
   role,
+  period,
   attachments,
   close,
   updateControl,
@@ -2052,9 +2963,15 @@ function ControlDrawer({
   notify,
   changeRole,
   scopeConfig,
+  ownershipChanges,
+  setOwnershipChanges,
+  gaps,
+  setGaps,
+  appendAudit,
 }: {
   control: InventoryControl;
   role: Role;
+  period: string;
   attachments: string[];
   close: () => void;
   updateControl: (id: string, updates: Partial<InventoryControl>) => void;
@@ -2062,11 +2979,20 @@ function ControlDrawer({
   notify: (m: string) => void;
   changeRole: (r: Role) => void;
   scopeConfig: ScopeConfig;
+  ownershipChanges: OwnershipChange[];
+  setOwnershipChanges: Dispatch<SetStateAction<OwnershipChange[]>>;
+  gaps: RemediationGap[];
+  setGaps: Dispatch<SetStateAction<RemediationGap[]>>;
+  appendAudit: (controlId: string, action: string, detail: string) => void;
 }) {
-  const [accepted, setAccepted] = useState(false);
-  const [understood, setUnderstood] = useState(false);
-  const [performed, setPerformed] = useState(false);
+  const [accepted, setAccepted] = useState(control.accepted || false);
+  const [understood, setUnderstood] = useState(control.understood || false);
+  const [performed, setPerformed] = useState(control.performed || false);
   const [draft, setDraft] = useState(control);
+  const [showReassign, setShowReassign] = useState(false);
+  const [newOwner, setNewOwner] = useState("");
+  const [handover, setHandover] = useState(false);
+  const [training, setTraining] = useState(false);
   const saveAdmin = () => {
     const status: ControlStatus =
       draft.owner === "Unassigned"
@@ -2075,7 +3001,70 @@ function ControlDrawer({
           ? "Not started"
           : draft.status;
     updateControl(control.id, { ...draft, status, unit: "Food & Nutrition" });
+    appendAudit(
+      control.id,
+      "Control requirements updated",
+      "Ownership, execution rules or guidance changed",
+    );
     notify(`${control.id} requirements saved`);
+  };
+  const reassign = () => {
+    if (!newOwner.trim() || !handover || !training) {
+      notify("New owner, handover and training confirmation are required");
+      return;
+    }
+    const change: OwnershipChange = {
+      id: crypto.randomUUID(),
+      controlId: control.id,
+      period,
+      fromOwner: draft.owner,
+      toOwner: newOwner.trim(),
+      requestedBy: CURRENT_USER,
+      changedAt: new Date().toISOString(),
+      handoverConfirmed: handover,
+      trainingConfirmed: training,
+    };
+    setOwnershipChanges((current) => [change, ...current]);
+    updateControl(control.id, {
+      owner: change.toOwner,
+      status: "Not started",
+      accepted: false,
+      understood: false,
+      performed: false,
+    });
+    appendAudit(
+      control.id,
+      "Ownership reassigned",
+      `${change.fromOwner} to ${change.toOwner}; handover and training confirmed`,
+    );
+    notify(`${control.id} reassigned to ${change.toOwner}`);
+    close();
+  };
+  const logGap = () => {
+    const title = window.prompt(
+      "Describe the control gap",
+      `${control.id} execution exception`,
+    );
+    if (!title?.trim()) return;
+    setGaps((current) => [
+      {
+        id: crypto.randomUUID(),
+        controlId: control.id,
+        period,
+        title: title.trim(),
+        description: "",
+        severity: "Medium",
+        owner: draft.owner,
+        due: "",
+        status: "Open",
+        closureEvidence: "",
+        controllerApproved: false,
+        createdAt: new Date().toISOString(),
+      },
+      ...current,
+    ]);
+    appendAudit(control.id, "Gap logged", title.trim());
+    notify(`Gap logged for ${control.id}`);
   };
   return (
     <>
@@ -2121,6 +3110,17 @@ function ControlDrawer({
             <div>
               <span>Control type</span>
               <strong>{draft.type}</strong>
+            </div>
+            <div>
+              <span>Open gaps</span>
+              <strong>
+                {
+                  gaps.filter(
+                    (gap) =>
+                      gap.controlId === draft.id && gap.status !== "Closed",
+                  ).length
+                }
+              </strong>
             </div>
           </div>
           {role === "Controller Admin" ? (
@@ -2204,13 +3204,70 @@ function ControlDrawer({
                   <span className="section-kicker">Desktop procedure</span>
                   <h3>DTP guidance</h3>
                 </div>
+                <label>
+                  Procedure summary
+                  <textarea
+                    value={draft.dtpSummary}
+                    placeholder="Add concise steps here, or summarize the attached procedure"
+                    onChange={(e) =>
+                      setDraft({ ...draft, dtpSummary: e.target.value })
+                    }
+                  />
+                </label>
+                <div className="detail-grid">
+                  <label>
+                    Version
+                    <input
+                      value={draft.dtpVersion}
+                      onChange={(e) =>
+                        setDraft({ ...draft, dtpVersion: e.target.value })
+                      }
+                      placeholder="e.g. 1.0"
+                    />
+                  </label>
+                  <label>
+                    Procedure owner
+                    <input
+                      value={draft.dtpOwner}
+                      onChange={(e) =>
+                        setDraft({ ...draft, dtpOwner: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Last reviewed
+                    <input
+                      type="date"
+                      value={draft.dtpLastReviewed}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          dtpLastReviewed: e.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Next review
+                    <input
+                      type="date"
+                      value={draft.dtpNextReview}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          dtpNextReview: e.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
                 <label className="guidance-card file-card">
                   <span>▤</span>
                   <span>
                     <strong>
                       {draft.dtpStatus === "Not added"
                         ? "Add a desktop procedure"
-                        : `${draft.process} desktop procedure`}
+                        : draft.dtpDocument || `${draft.process} desktop procedure`}
                     </strong>
                     <small>
                       {draft.dtpStatus} · Upload or replace local guidance
@@ -2221,13 +3278,28 @@ function ControlDrawer({
                     type="file"
                     onChange={(e) => {
                       if (e.target.files?.[0]) {
-                        setDraft({ ...draft, dtpStatus: "Current" });
-                        updateControl(draft.id, { dtpStatus: "Current" });
+                        setDraft({
+                          ...draft,
+                          dtpStatus: "Current",
+                          dtpDocument: e.target.files[0].name,
+                        });
                         notify(`${e.target.files[0].name} attached`);
                       }
                     }}
                   />
                 </label>
+                <button
+                  className="wide-secondary"
+                  onClick={() =>
+                    setDraft({
+                      ...draft,
+                      dtpStatus: "Current",
+                      dtpLastReviewed: new Date().toISOString().slice(0, 10),
+                    })
+                  }
+                >
+                  Confirm DTP is current
+                </button>
               </section>
             </>
           ) : (
@@ -2287,12 +3359,27 @@ function ControlDrawer({
                   <span>
                     <strong>
                       {draft.dtpStatus === "Current"
-                        ? "Desktop procedure available"
+                        ? draft.dtpDocument || "Desktop procedure available"
                         : "Desktop procedure not yet available"}
                     </strong>
-                    <small>{draft.dtpStatus}</small>
+                    <small>
+                      {draft.dtpStatus}
+                      {draft.dtpVersion ? ` · Version ${draft.dtpVersion}` : ""}
+                      {draft.dtpLastReviewed
+                        ? ` · Reviewed ${draft.dtpLastReviewed}`
+                        : ""}
+                    </small>
                   </span>
                 </div>
+                {draft.dtpSummary && (
+                  <p className="field-note">{draft.dtpSummary}</p>
+                )}
+                {draft.instructions && (
+                  <div className="fixed-scope">
+                    <span>Execution instructions</span>
+                    <strong>{draft.instructions}</strong>
+                  </div>
+                )}
                 <label className="guidance-card file-card">
                   <span>▱</span>
                   <span>
@@ -2334,20 +3421,59 @@ function ControlDrawer({
                     <strong>{draft.owner}</strong>
                   </span>
                   <button
-                    onClick={() =>
-                      notify(
-                        "Ownership change request sent to the Controller Admin",
-                      )
-                    }
+                    onClick={() => setShowReassign(!showReassign)}
                   >
-                    Request change
+                    Reassign
                   </button>
                 </div>
+                {showReassign && (
+                  <div className="reassign-form">
+                    <label>
+                      New Control Owner
+                      <input
+                        value={newOwner}
+                        onChange={(e) => setNewOwner(e.target.value)}
+                        placeholder="Enter new owner"
+                      />
+                    </label>
+                    <label className="admin-check">
+                      <input
+                        type="checkbox"
+                        checked={handover}
+                        onChange={(e) => setHandover(e.target.checked)}
+                      />
+                      Handover of responsibilities is complete
+                    </label>
+                    <label className="admin-check">
+                      <input
+                        type="checkbox"
+                        checked={training}
+                        onChange={(e) => setTraining(e.target.checked)}
+                      />
+                      Training and procedure walkthrough are complete
+                    </label>
+                    <button onClick={reassign}>Confirm reassignment</button>
+                  </div>
+                )}
+                {ownershipChanges
+                  .filter((change) => change.controlId === control.id)
+                  .slice(0, 3)
+                  .map((change) => (
+                    <small className="field-note" key={change.id}>
+                      {new Date(change.changedAt).toLocaleDateString()}:{" "}
+                      {change.fromOwner} → {change.toOwner}
+                    </small>
+                  ))}
               </section>
             </>
           )}
         </div>
         <div className="drawer-footer">
+          {role === "Controller Admin" && (
+            <button className="secondary-button" onClick={logGap}>
+              Log a gap
+            </button>
+          )}
           <button
             className="secondary-button"
             onClick={() =>
@@ -2369,7 +3495,16 @@ function ControlDrawer({
                 updateControl(draft.id, {
                   status: "Certified",
                   due: "Complete",
+                  accepted,
+                  understood,
+                  performed,
+                  certifiedAt: new Date().toISOString(),
                 });
+                appendAudit(
+                  draft.id,
+                  "Control certified",
+                  "Ownership, understanding and execution acknowledgements confirmed",
+                );
                 notify(`${draft.id} certified`);
                 close();
               }}

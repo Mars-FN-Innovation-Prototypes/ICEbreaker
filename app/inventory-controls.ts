@@ -23,6 +23,17 @@ export type InventoryControl = {
   site: string;
   unit: string;
   instructions: string;
+  applicable: boolean;
+  dtpSummary: string;
+  dtpOwner: string;
+  dtpVersion: string;
+  dtpLastReviewed: string;
+  dtpNextReview: string;
+  dtpDocument: string;
+  accepted?: boolean;
+  understood?: boolean;
+  performed?: boolean;
+  certifiedAt?: string;
 };
 
 const controlRows: Array<
@@ -510,6 +521,13 @@ export const inventoryControls: InventoryControl[] = controlRows.map(
     site: "",
     unit: "Food & Nutrition",
     instructions: "",
+    applicable: true,
+    dtpSummary: "",
+    dtpOwner: "Controller Admin",
+    dtpVersion: "",
+    dtpLastReviewed: "",
+    dtpNextReview: "",
+    dtpDocument: "",
   }),
 );
 

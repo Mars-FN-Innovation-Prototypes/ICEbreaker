@@ -69,7 +69,15 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /ICEbreaker-101\.docx/);
   assert.doesNotMatch(page, /Petcare|Snacking|\bCertifier\b/);
   assert.match(page, /localStorage/);
-  assert.match(page, /importCsv/);
+  assert.match(page, /importWorkbook/);
+  assert.match(page, /Evidence Needed \(Y\/N\)/);
+  assert.match(page, /Apply validated import/);
+  assert.match(page, /Recent ownership changes/);
+  assert.match(page, /Handover of responsibilities is complete/);
+  assert.match(page, /Gap remediation/);
+  assert.match(page, /Controller closure approval/);
+  assert.match(page, /Procedure summary/);
+  assert.match(page, /executionKey\(period/);
   assert.match(page, /updateControl/);
   assert.match(page, /\/brand\/logo-lockup\.png/);
   assert.match(page, /\/brand\/better-food-text\.png/);

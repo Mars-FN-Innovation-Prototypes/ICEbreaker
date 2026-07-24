@@ -1,28 +1,38 @@
 # ICEbreaker — Digitalized Controls Hub
 
-ICEbreaker is a prototype for a centralized Internal Control Excellence workspace serving Controllers, Control Preparers and Reviewers.
+ICEbreaker is a scalable controls workspace for Mars Food & Nutrition. The first MVP pilot focuses on Europe inventory controls and Control Owners/Reviewers, while the information model and navigation are designed to support additional regions and control families.
 
-## What this prototype tests
+## Phase 1 capabilities
 
-- Whether a controller can identify overdue, missing-evidence and unassigned-reviewer risks in under a minute.
-- Whether a preparer can understand ownership, guidance, evidence expectations and due dates in one place.
-- Whether a reviewer can prioritize submissions and access the evidence and history needed to act.
-- Whether real framework language can be translated into a simple, optimistic operating experience without losing audit traceability.
+- Controller-only reporting with saved filters, leadership/site/controller dashboards, CSV extracts and ownership-change reporting.
+- Period-specific control assignments, status, evidence, acknowledgements and certification.
+- Control Owner workflow for ownership acceptance, procedure understanding, evidence and certification.
+- Reassignment with required handover and training confirmation.
+- Admin maintenance for scope, controls, applicability, evidence rules, instructions and desktop procedures (DTPs).
+- Native Excel `.xlsx` mass upload with validation and preview.
+- Lightweight gap remediation with ownership, due date, severity, closure evidence and Controller approval.
+- Simulated reminder sequence with direct-control-link behavior.
 
-The current prototype uses the 31 General Accounting controls in the supplied framework extract. Execution status, people, regions, units and dates are illustrative for workflow testing.
+Control preparer workflows, predictive analytics, ServiceNow integration and advanced collaboration remain outside Phase 1.
 
-## Suggested feedback questions
+## Prototype architecture
 
-1. What is the first risk signal you look for during close?
-2. What information is missing before you can act on a control exception?
-3. Which reminders or escalation rules should be automated?
-4. What evidence metadata would make audit retrieval self-service?
-5. Where should ownership certification sit in the workflow?
+The public GitHub Pages build is a client-side MVP. Definitions, period execution records, evidence filenames, reassignment history, remediation gaps and audit events are separated in the application model and persisted in the browser for testing.
 
-## Recommended product sequence
+For enterprise deployment, retain the React application and replace local persistence with:
 
-1. **Prototype validation:** role-based dashboard, work queue, evidence checklist, guidance and control detail.
-2. **Pilot:** identity and role access, reminders, attestations, evidence upload, reviewer decisions and immutable activity history.
-3. **Scale:** ERP/BlackLine integrations, automated evidence checks, risk scoring, audit packages and cross-process reporting.
+- Microsoft Entra ID / SSO for identity and role claims.
+- GCP-hosted application services and governed data storage.
+- Object storage for evidence and DTP files.
+- Microsoft Graph or an approved enterprise mail service for reminders.
+- Server-enforced authorization, retention and immutable audit logging.
 
-The prototype intentionally keeps data local and illustrative. Production use will require governed identity, retention, permissions, audit logging, regional data handling and integration design.
+No sensitive production data should be entered into the public prototype.
+
+## Local development
+
+```sh
+npm install
+npm run dev
+npm test
+```
