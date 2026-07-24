@@ -12,7 +12,11 @@ export async function generateMetadata(): Promise<Metadata> {
     metadataBase,
     title: "ICEbreaker | Digitalized Controls Hub",
     description: "A scalable controls workspace for ownership, certification, evidence and proactive risk visibility.",
-    icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
+    icons: {
+      icon: [{ url: "/brand/globe-badge.png", type: "image/png" }],
+      shortcut: "/brand/globe-badge.png",
+      apple: "/brand/globe-badge.png",
+    },
     openGraph: {
       title: "ICEbreaker | Digitalized Controls Hub",
       description: "See risk sooner. Act before it grows.",

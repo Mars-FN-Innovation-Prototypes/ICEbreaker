@@ -78,10 +78,14 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /Controller closure approval/);
   assert.match(page, /Procedure summary/);
   assert.match(page, /executionKey\(period/);
+  assert.match(page, /Array\.isArray\(parsed\)/);
+  assert.match(page, /ControlDrawerBoundary/);
+  assert.match(page, /Your workspace is still available/);
   assert.match(page, /updateControl/);
   assert.match(page, /\/brand\/logo-lockup\.png/);
   assert.match(page, /\/brand\/better-food-text\.png/);
   assert.match(layout, /requestHeaders\.get\("x-forwarded-host"\)/);
+  assert.match(layout, /\/brand\/globe-badge\.png/);
   assert.match(css, /--pea:\s*#62bb46/);
   assert.match(css, /--mars-blue:\s*#0000a0/);
   assert.match(css, /prefers-reduced-motion/);

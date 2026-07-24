@@ -3,9 +3,11 @@
 /* eslint-disable @next/next/no-img-element */
 
 import {
+  Component,
   useEffect,
   useMemo,
   useState,
+  type ReactNode,
   type Dispatch,
   type SetStateAction,
 } from "react";
@@ -98,6 +100,47 @@ const statusClass: Record<ControlStatus, string> = {
   Unassigned: "neutral",
   "Not started": "neutral",
 };
+
+class ControlDrawerBoundary extends Component<
+  { children: ReactNode; close: () => void },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    if (this.state.failed)
+      return (
+        <>
+          <button
+            className="drawer-scrim"
+            onClick={this.props.close}
+            aria-label="Close control details"
+          />
+          <aside className="control-drawer drawer-recovery">
+            <div className="drawer-header">
+              <strong>Control details could not be opened</strong>
+              <button onClick={this.props.close}>×</button>
+            </div>
+            <div className="drawer-body empty-state">
+              <strong>Your workspace is still available.</strong>
+              <span>
+                Close this panel and try again. Older browser-saved prototype
+                data will be repaired automatically on reload.
+              </span>
+              <button className="primary-button" onClick={this.props.close}>
+                Return to controls
+              </button>
+            </div>
+          </aside>
+        </>
+      );
+    return this.props.children;
+  }
+}
 
 const copy: Record<Nav, { eyebrow: string; title: string; body: string }> = {
   "Control tower": {
@@ -249,41 +292,80 @@ export default function IcebreakerApp() {
         );
         const storedScope = window.localStorage.getItem("icebreaker-scope");
         if (storedDefinitions) {
-          setDefinitions(
-            (JSON.parse(storedDefinitions) as InventoryControl[]).map(
-              normalizeControl,
-            ),
-          );
+          const parsed = JSON.parse(storedDefinitions);
+          if (Array.isArray(parsed))
+            setDefinitions(
+              (parsed as InventoryControl[]).map(normalizeControl),
+            );
         } else if (storedControls) {
-          const parsed: InventoryControl[] = JSON.parse(storedControls);
-          setDefinitions(parsed.map(normalizeControl));
-          setExecutions(
-            Object.fromEntries(
-              parsed.map((control) => [
-                executionKey("July 2026", control.id),
-                {
-                  ...defaultExecution(control, "July 2026"),
-                  owner:
-                    control.owner === "Unassigned"
-                      ? "Unassigned"
-                      : CURRENT_USER,
-                  status: control.status,
-                  due: control.due,
-                  region: control.region || "Europe",
-                  site: control.site || "",
-                },
-              ]),
-            ),
-          );
+          const parsed = JSON.parse(storedControls);
+          if (Array.isArray(parsed)) {
+            setDefinitions(
+              (parsed as InventoryControl[]).map(normalizeControl),
+            );
+            setExecutions(
+              Object.fromEntries(
+                (parsed as InventoryControl[]).map((control) => [
+                  executionKey("July 2026", control.id),
+                  {
+                    ...defaultExecution(control, "July 2026"),
+                    owner:
+                      control.owner === "Unassigned"
+                        ? "Unassigned"
+                        : CURRENT_USER,
+                    status: control.status,
+                    due: control.due,
+                    region: control.region || "Europe",
+                    site: control.site || "",
+                  },
+                ]),
+              ),
+            );
+          }
         }
-        if (storedExecutions) setExecutions(JSON.parse(storedExecutions));
-        if (storedOwnershipChanges)
-          setOwnershipChanges(JSON.parse(storedOwnershipChanges));
-        if (storedGaps) setGaps(JSON.parse(storedGaps));
-        if (storedAudit) setAuditEvents(JSON.parse(storedAudit));
-        if (storedViews) setSavedViews(JSON.parse(storedViews));
-        if (storedAttachments) setAttachments(JSON.parse(storedAttachments));
-        if (storedScope) setScopeConfig(JSON.parse(storedScope));
+        if (storedExecutions) {
+          const parsed = JSON.parse(storedExecutions);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+            setExecutions(parsed);
+        }
+        if (storedOwnershipChanges) {
+          const parsed = JSON.parse(storedOwnershipChanges);
+          setOwnershipChanges(Array.isArray(parsed) ? parsed : []);
+        }
+        if (storedGaps) {
+          const parsed = JSON.parse(storedGaps);
+          setGaps(Array.isArray(parsed) ? parsed : []);
+        }
+        if (storedAudit) {
+          const parsed = JSON.parse(storedAudit);
+          setAuditEvents(Array.isArray(parsed) ? parsed : []);
+        }
+        if (storedViews) {
+          const parsed = JSON.parse(storedViews);
+          if (Array.isArray(parsed)) setSavedViews(parsed);
+        }
+        if (storedAttachments) {
+          const parsed = JSON.parse(storedAttachments);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            setAttachments(
+              Object.fromEntries(
+                Object.entries(parsed).map(([key, value]) => [
+                  key,
+                  Array.isArray(value)
+                    ? value.filter((item): item is string =>
+                        Boolean(item && typeof item === "string"),
+                      )
+                    : [],
+                ]),
+              ),
+            );
+          }
+        }
+        if (storedScope) {
+          const parsed = JSON.parse(storedScope);
+          if (parsed && Array.isArray(parsed.regions) && Array.isArray(parsed.sites))
+            setScopeConfig(parsed);
+        }
       } catch {
         /* Ignore stale local MVP data. */
       }
@@ -748,33 +830,38 @@ export default function IcebreakerApp() {
       </main>
 
       {selected && (
-        <ControlDrawer
-          control={selected}
-          role={role}
-          period={period}
-          attachments={
-            attachments[executionKey(period, selected.id)] || []
-          }
+        <ControlDrawerBoundary
+          key={`${period}-${selected.id}-${role}`}
           close={() => setSelected(null)}
-          updateControl={updateControl}
-          addAttachment={(name) =>
-            setAttachments((current) => ({
-              ...current,
-              [executionKey(period, selected.id)]: [
-                ...(current[executionKey(period, selected.id)] || []),
-                name,
-              ],
-            }))
-          }
-          notify={notify}
-          changeRole={changeRole}
-          scopeConfig={scopeConfig}
-          ownershipChanges={ownershipChanges}
-          setOwnershipChanges={setOwnershipChanges}
-          gaps={gaps}
-          setGaps={setGaps}
-          appendAudit={appendAudit}
-        />
+        >
+          <ControlDrawer
+            control={selected}
+            role={role}
+            period={period}
+            attachments={
+              attachments[executionKey(period, selected.id)] || []
+            }
+            close={() => setSelected(null)}
+            updateControl={updateControl}
+            addAttachment={(name) =>
+              setAttachments((current) => ({
+                ...current,
+                [executionKey(period, selected.id)]: [
+                  ...(current[executionKey(period, selected.id)] || []),
+                  name,
+                ],
+              }))
+            }
+            notify={notify}
+            changeRole={changeRole}
+            scopeConfig={scopeConfig}
+            ownershipChanges={ownershipChanges}
+            setOwnershipChanges={setOwnershipChanges}
+            gaps={gaps}
+            setGaps={setGaps}
+            appendAudit={appendAudit}
+          />
+        </ControlDrawerBoundary>
       )}
       {overlay && (
         <OverlayPanel
