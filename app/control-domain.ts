@@ -1,4 +1,8 @@
-import type { ControlStatus, InventoryControl } from "./inventory-controls";
+import type {
+  ControlStatus,
+  ExecutionOutcome,
+  InventoryControl,
+} from "./inventory-controls";
 
 export type ControlExecution = {
   controlId: string;
@@ -7,11 +11,17 @@ export type ControlExecution = {
   status: ControlStatus;
   due: string;
   region: string;
+  country: string;
   site: string;
   accepted: boolean;
   understood: boolean;
   acknowledgedAt?: string;
   performed: boolean;
+  executionOutcome: ExecutionOutcome;
+  deviationNotes: string;
+  draftSavedAt?: string;
+  documentationReviewed: boolean;
+  documentationReviewedAt?: string;
   certifiedAt?: string;
 };
 
@@ -65,14 +75,22 @@ export function defaultExecution(
   return {
     controlId: control.id,
     period,
-    owner: "Unassigned",
-    status: "Unassigned",
-    due: "Not scheduled",
+    owner: control.owner || "Unassigned",
+    status: control.status,
+    due: control.due,
     region: control.region || "Europe",
-    site: "",
-    accepted: false,
-    understood: false,
-    performed: false,
+    country: control.country || "",
+    site: control.site || control.unit || "",
+    accepted: control.accepted || false,
+    understood: control.understood || false,
+    acknowledgedAt: control.acknowledgedAt,
+    performed: control.performed || false,
+    executionOutcome: control.executionOutcome || "Not recorded",
+    deviationNotes: control.deviationNotes || "",
+    draftSavedAt: control.draftSavedAt,
+    documentationReviewed: control.documentationReviewed || false,
+    documentationReviewedAt: control.documentationReviewedAt,
+    certifiedAt: control.certifiedAt,
   };
 }
 
@@ -81,10 +99,16 @@ export const executionFields = new Set<keyof InventoryControl>([
   "status",
   "due",
   "region",
+  "country",
   "site",
   "accepted",
   "understood",
   "acknowledgedAt",
   "performed",
+  "executionOutcome",
+  "deviationNotes",
+  "draftSavedAt",
+  "documentationReviewed",
+  "documentationReviewedAt",
   "certifiedAt",
 ]);

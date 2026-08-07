@@ -15,6 +15,7 @@ import {
   inventoryControls,
   processCounts,
   type ControlStatus,
+  type ExecutionOutcome,
   type InventoryControl,
 } from "./inventory-controls";
 import {
@@ -39,27 +40,46 @@ type Nav =
   | "Admin setup";
 type Overlay = "help" | "notifications" | "profile" | null;
 type Audience = "Leadership" | "Site owners" | "Controllers";
-type ScopeConfig = { regions: string[]; sites: string[] };
+type ScopeConfig = { regions: string[]; countries: string[]; sites: string[] };
 type SavedView = {
   name: string;
+  businessProcess?: string;
   process: string;
   status: string;
   evidence: string;
   audience: Audience;
   region?: string;
+  country?: string;
+  pillar?: string;
   site?: string;
   owner?: string;
   controlType?: string;
   applicability?: string;
   keyControl?: string;
   frequency?: string;
+  attestationFrequency?: string;
 };
 
 const CURRENT_USER = "Demo Account";
 const DEMO_INITIALS = "DA";
-const DEFAULT_SCOPE: ScopeConfig = { regions: ["Europe"], sites: [] };
+const DATA_VERSION = "full-control-instances-v1";
+const DEMO_OWNERS = [CURRENT_USER];
+const DEFAULT_SCOPE: ScopeConfig = {
+  regions: ["EU"],
+  countries: ["Netherlands", "UK"],
+  sites: ["OBL", "KLN"],
+};
 const normalizeControl = (control: InventoryControl): InventoryControl => ({
   ...control,
+  controlNumber: control.controlNumber || control.id,
+  pillar: control.pillar || "ICE Controls",
+  businessProcess: control.businessProcess || "Inventory",
+  objective: control.objective || "",
+  riskDescription: control.riskDescription || "",
+  description: control.description || control.instructions || "",
+  attestationFrequency: control.attestationFrequency || control.frequency,
+  fraudControl: control.fraudControl || false,
+  country: control.country || "",
   applicable: control.applicable ?? true,
   dtpSummary: control.dtpSummary || "",
   dtpOwner: control.dtpOwner || "Controller Admin",
@@ -67,6 +87,10 @@ const normalizeControl = (control: InventoryControl): InventoryControl => ({
   dtpLastReviewed: control.dtpLastReviewed || "",
   dtpNextReview: control.dtpNextReview || "",
   dtpDocument: control.dtpDocument || "",
+  dtpHistory: Array.isArray(control.dtpHistory) ? control.dtpHistory : [],
+  executionOutcome: control.executionOutcome || "Not recorded",
+  deviationNotes: control.deviationNotes || "",
+  documentationReviewed: control.documentationReviewed || false,
 });
 const DEFAULT_VIEWS: SavedView[] = [
   {
@@ -94,11 +118,76 @@ const DEFAULT_VIEWS: SavedView[] = [
 
 const statusClass: Record<ControlStatus, string> = {
   Certified: "success",
+  "Ready to certify": "success",
+  "Performed with deviations": "warning",
   "Due soon": "review",
   "Evidence needed": "warning",
+  "In progress": "review",
+  Acknowledged: "review",
+  "Acknowledgement pending": "neutral",
   Overdue: "danger",
   Unassigned: "neutral",
   "Not started": "neutral",
+};
+
+const controlCode = (control: InventoryControl) =>
+  control.controlNumber || control.id;
+
+const makeInstanceId = (
+  controlNumber: string,
+  region: string,
+  country: string,
+  unit: string,
+) =>
+  `${controlNumber}--${region}--${country}--${unit}`
+    .toUpperCase()
+    .replace(/[^A-Z0-9.-]+/g, "-");
+
+const dueForFrequency = (frequency: string) => {
+  const normalized = frequency.toLowerCase();
+  if (normalized.includes("annual") && !normalized.includes("semi"))
+    return "2026-12-31";
+  if (normalized.includes("semi")) return "2026-06-30";
+  return "2026-07-31";
+};
+
+const workflowStage = (
+  control: InventoryControl,
+  evidence: string[] = [],
+) => {
+  if (control.owner === "Unassigned") return "Unassigned";
+  if (control.status === "Certified") return "Certified";
+  if (control.executionOutcome === "Performed with deviations")
+    return "Performed with deviations";
+  if (control.performed && control.evidenceRequired && !evidence.length)
+    return "Performed · evidence missing";
+  if (control.performed) return "Ready to certify";
+  if (control.draftSavedAt) return "In progress";
+  if (control.accepted && control.understood) return "Acknowledged";
+  return "Acknowledgement pending";
+};
+
+const derivedStatus = (
+  control: InventoryControl,
+  evidence: string[] = [],
+): ControlStatus => {
+  const stage = workflowStage(control, evidence);
+  if (stage === "Unassigned") return "Unassigned";
+  if (stage === "Certified") return "Certified";
+  const due = /^\d{4}-\d{2}-\d{2}$/.test(control.due)
+    ? new Date(`${control.due}T23:59:59`)
+    : null;
+  if (due && due.getTime() < Date.now()) return "Overdue";
+  if (control.executionOutcome === "Performed with deviations")
+    return "Performed with deviations";
+  if (control.performed && control.evidenceRequired && !evidence.length)
+    return "Evidence needed";
+  if (control.performed) return "Ready to certify";
+  if (control.draftSavedAt) return "In progress";
+  if (control.accepted && control.understood) return "Acknowledged";
+  if (due && due.getTime() - Date.now() <= 7 * 24 * 60 * 60 * 1000)
+    return "Due soon";
+  return "Acknowledgement pending";
 };
 
 class ControlDrawerBoundary extends Component<
@@ -235,9 +324,14 @@ export default function IcebreakerApp() {
   const [selected, setSelected] = useState<InventoryControl | null>(null);
   const [query, setQuery] = useState("");
   const [processFilter, setProcessFilter] = useState("All processes");
+  const [businessProcessFilter, setBusinessProcessFilter] = useState(
+    "All business processes",
+  );
   const [statusFilter, setStatusFilter] = useState("All statuses");
   const [evidenceFilter, setEvidenceFilter] = useState("All evidence rules");
+  const [pillarFilter, setPillarFilter] = useState("All control pillars");
   const [regionFilter, setRegionFilter] = useState("All configured regions");
+  const [countryFilter, setCountryFilter] = useState("All countries");
   const [siteFilter, setSiteFilter] = useState("All configured sites");
   const [ownerFilter, setOwnerFilter] = useState("All owners");
   const [typeFilter, setTypeFilter] = useState("All control types");
@@ -245,6 +339,9 @@ export default function IcebreakerApp() {
     useState("All applicability");
   const [keyFilter, setKeyFilter] = useState("All controls");
   const [frequencyFilter, setFrequencyFilter] = useState("All frequencies");
+  const [attestationFilter, setAttestationFilter] = useState(
+    "All attestation frequencies",
+  );
   const [scopeConfig, setScopeConfig] = useState<ScopeConfig>(DEFAULT_SCOPE);
   const [audience, setAudience] = useState<Audience>("Leadership");
   const [savedViews, setSavedViews] = useState<SavedView[]>(DEFAULT_VIEWS);
@@ -260,14 +357,37 @@ export default function IcebreakerApp() {
         const execution =
           executions[executionKey(period, definition.id)] ||
           defaultExecution(definition, period);
-        return { ...definition, ...execution };
+        const merged = { ...definition, ...execution };
+        return {
+          ...merged,
+          status: derivedStatus(
+            merged,
+            attachments[executionKey(period, definition.id)] || [],
+          ),
+        };
       }),
-    [definitions, executions, period],
+    [definitions, executions, period, attachments],
   );
 
   useEffect(() => {
     const hydrate = window.setTimeout(() => {
       try {
+        const storedVersion = window.localStorage.getItem(
+          "icebreaker-data-version",
+        );
+        if (storedVersion !== DATA_VERSION) {
+          setDefinitions(inventoryControls.map(normalizeControl));
+          setExecutions({});
+          setOwnershipChanges([]);
+          setGaps([]);
+          setAuditEvents([]);
+          setSavedViews(DEFAULT_VIEWS);
+          setAttachments({});
+          setScopeConfig(DEFAULT_SCOPE);
+          window.localStorage.setItem("icebreaker-data-version", DATA_VERSION);
+          setHydrated(true);
+          return;
+        }
         const storedControls = window.localStorage.getItem(
           "icebreaker-controls",
         );
@@ -363,8 +483,18 @@ export default function IcebreakerApp() {
         }
         if (storedScope) {
           const parsed = JSON.parse(storedScope);
-          if (parsed && Array.isArray(parsed.regions) && Array.isArray(parsed.sites))
-            setScopeConfig(parsed);
+          if (
+            parsed &&
+            Array.isArray(parsed.regions) &&
+            Array.isArray(parsed.sites)
+          )
+            setScopeConfig({
+              regions: parsed.regions,
+              countries: Array.isArray(parsed.countries)
+                ? parsed.countries
+                : DEFAULT_SCOPE.countries,
+              sites: parsed.sites,
+            });
         }
       } catch {
         /* Ignore stale local MVP data. */
@@ -430,16 +560,23 @@ export default function IcebreakerApp() {
     () =>
       controls.filter((control) => {
         const haystack =
-          `${control.id} ${control.name} ${control.process} ${control.owner}`.toLowerCase();
+          `${controlCode(control)} ${control.name} ${control.businessProcess} ${control.process} ${control.owner} ${control.country} ${control.unit} ${control.pillar}`.toLowerCase();
         return (
           haystack.includes(query.toLowerCase()) &&
+          (pillarFilter === "All control pillars" ||
+            control.pillar === pillarFilter) &&
           (processFilter === "All processes" ||
             control.process === processFilter) &&
+          (businessProcessFilter === "All business processes" ||
+            control.businessProcess === businessProcessFilter) &&
           (statusFilter === "All statuses" ||
             control.status === statusFilter) &&
           (regionFilter === "All configured regions" ||
             !scopeConfig.regions.includes(regionFilter) ||
             control.region === regionFilter) &&
+          (countryFilter === "All countries" ||
+            !scopeConfig.countries.includes(countryFilter) ||
+            control.country === countryFilter) &&
           (siteFilter === "All configured sites" ||
             !scopeConfig.sites.includes(siteFilter) ||
             control.site === siteFilter) &&
@@ -455,6 +592,8 @@ export default function IcebreakerApp() {
               : !control.keyControl)) &&
           (frequencyFilter === "All frequencies" ||
             control.frequency === frequencyFilter) &&
+          (attestationFilter === "All attestation frequencies" ||
+            control.attestationFrequency === attestationFilter) &&
           (evidenceFilter === "All evidence rules" ||
             (evidenceFilter === "Evidence required"
               ? control.evidenceRequired
@@ -464,10 +603,13 @@ export default function IcebreakerApp() {
     [
       controls,
       query,
+      pillarFilter,
       processFilter,
+      businessProcessFilter,
       statusFilter,
       evidenceFilter,
       regionFilter,
+      countryFilter,
       siteFilter,
       scopeConfig,
       ownerFilter,
@@ -475,6 +617,7 @@ export default function IcebreakerApp() {
       applicabilityFilter,
       keyFilter,
       frequencyFilter,
+      attestationFilter,
     ],
   );
 
@@ -551,11 +694,17 @@ export default function IcebreakerApp() {
           status: control.status,
           due: control.due,
           region: control.region,
+          country: control.country,
           site: control.site,
           accepted: control.accepted || false,
           understood: control.understood || false,
           acknowledgedAt: control.acknowledgedAt,
           performed: control.performed || false,
+          executionOutcome: control.executionOutcome || "Not recorded",
+          deviationNotes: control.deviationNotes || "",
+          draftSavedAt: control.draftSavedAt,
+          documentationReviewed: control.documentationReviewed || false,
+          documentationReviewedAt: control.documentationReviewedAt,
           certifiedAt: control.certifiedAt,
         };
       });
@@ -571,37 +720,62 @@ export default function IcebreakerApp() {
   const downloadReport = () => {
     const rows = [
       [
-        "Control ID",
+        "Control instance ID",
+        "Control #",
+        "Control pillar",
         "Control name",
+        "Business process",
         "Sub-process",
-        "Frequency",
+        "Control frequency",
+        "Attestation frequency",
         "Control type",
         "Key control",
+        "Fraud control",
         "Applicable",
         "Evidence required",
         "Control Owner",
         "Region",
-        "Site / factory",
+        "Country",
+        "Unit",
         "Ownership acknowledged",
         "Acknowledged at",
         "Status",
+        "Workflow stage",
+        "Documentation reviewed",
+        "Execution outcome",
+        "Deviation notes",
+        "Evidence files",
         "Due",
       ],
       ...filtered.map((c) => [
         c.id,
+        controlCode(c),
+        c.pillar,
         c.name,
+        c.businessProcess,
         c.process,
         c.frequency,
+        c.attestationFrequency,
         c.type,
         c.keyControl ? "Yes" : "No",
+        c.fraudControl ? "Yes" : "No",
         c.applicable ? "Yes" : "No",
         c.evidenceRequired ? "Yes" : "No",
         c.owner,
         c.region,
-        c.site,
+        c.country,
+        c.unit,
         c.accepted && c.understood ? "Yes" : "No",
         c.acknowledgedAt || "",
         c.status,
+        workflowStage(
+          c,
+          attachments[executionKey(period, c.id)] || [],
+        ),
+        c.documentationReviewed ? "Yes" : "No",
+        c.executionOutcome || "Not recorded",
+        c.deviationNotes || "",
+        (attachments[executionKey(period, c.id)] || []).join("; "),
         c.due,
       ]),
     ];
@@ -767,8 +941,12 @@ export default function IcebreakerApp() {
               controls={filtered}
               processFilter={processFilter}
               setProcessFilter={setProcessFilter}
+              businessProcessFilter={businessProcessFilter}
+              setBusinessProcessFilter={setBusinessProcessFilter}
               evidenceFilter={evidenceFilter}
               setEvidenceFilter={setEvidenceFilter}
+              pillarFilter={pillarFilter}
+              setPillarFilter={setPillarFilter}
               openControl={setSelected}
               downloadReport={downloadReport}
             />
@@ -779,12 +957,18 @@ export default function IcebreakerApp() {
               availableControls={controls}
               processFilter={processFilter}
               setProcessFilter={setProcessFilter}
+              businessProcessFilter={businessProcessFilter}
+              setBusinessProcessFilter={setBusinessProcessFilter}
               statusFilter={statusFilter}
               setStatusFilter={setStatusFilter}
               evidenceFilter={evidenceFilter}
               setEvidenceFilter={setEvidenceFilter}
+              pillarFilter={pillarFilter}
+              setPillarFilter={setPillarFilter}
               regionFilter={regionFilter}
               setRegionFilter={setRegionFilter}
+              countryFilter={countryFilter}
+              setCountryFilter={setCountryFilter}
               siteFilter={siteFilter}
               setSiteFilter={setSiteFilter}
               ownerFilter={ownerFilter}
@@ -797,6 +981,8 @@ export default function IcebreakerApp() {
               setKeyFilter={setKeyFilter}
               frequencyFilter={frequencyFilter}
               setFrequencyFilter={setFrequencyFilter}
+              attestationFilter={attestationFilter}
+              setAttestationFilter={setAttestationFilter}
               scopeConfig={scopeConfig}
               audience={audience}
               setAudience={setAudience}
@@ -846,6 +1032,16 @@ export default function IcebreakerApp() {
             attachments={
               attachments[executionKey(period, selected.id)] || []
             }
+            previousEvidence={Object.entries(attachments)
+              .filter(
+                ([key, files]) =>
+                  key.endsWith(`::${selected.id}`) &&
+                  key !== executionKey(period, selected.id) &&
+                  files.length > 0,
+              )
+              .flatMap(([key, files]) =>
+                files.map((file) => ({ period: key.split("::")[0], file })),
+              )}
             close={() => setSelected(null)}
             updateControl={updateControl}
             addAttachment={(name) =>
@@ -1421,22 +1617,56 @@ function ControlsLibrary({
   controls,
   processFilter,
   setProcessFilter,
+  businessProcessFilter,
+  setBusinessProcessFilter,
   evidenceFilter,
   setEvidenceFilter,
+  pillarFilter,
+  setPillarFilter,
   openControl,
   downloadReport,
 }: {
   controls: InventoryControl[];
   processFilter: string;
   setProcessFilter: (v: string) => void;
+  businessProcessFilter: string;
+  setBusinessProcessFilter: (v: string) => void;
   evidenceFilter: string;
   setEvidenceFilter: (v: string) => void;
+  pillarFilter: string;
+  setPillarFilter: (v: string) => void;
   openControl: (c: InventoryControl) => void;
   downloadReport: () => void;
 }) {
   return (
     <section className="workspace-view">
       <div className="filter-bar">
+        <label>
+          Control pillar
+          <select
+            value={pillarFilter}
+            onChange={(e) => setPillarFilter(e.target.value)}
+          >
+            <option>All control pillars</option>
+            <option>ICE Controls</option>
+            <option>Sustainability Controls</option>
+            <option>Operating Controls</option>
+          </select>
+        </label>
+        <label>
+          Business process
+          <select
+            value={businessProcessFilter}
+            onChange={(e) => setBusinessProcessFilter(e.target.value)}
+          >
+            <option>All business processes</option>
+            {Array.from(new Set(controls.map((c) => c.businessProcess)))
+              .sort()
+              .map((process) => (
+                <option key={process}>{process}</option>
+              ))}
+          </select>
+        </label>
         <label>
           Sub-process
           <select
@@ -1463,7 +1693,9 @@ function ControlsLibrary({
         <button
           onClick={() => {
             setProcessFilter("All processes");
+            setBusinessProcessFilter("All business processes");
             setEvidenceFilter("All evidence rules");
+            setPillarFilter("All control pillars");
           }}
         >
           Clear filters
@@ -1472,7 +1704,7 @@ function ControlsLibrary({
       </div>
       <ControlTable
         controls={controls}
-        title="ICE framework control library"
+        title="Enterprise controls library"
         openControl={openControl}
         showRules
         onExport={downloadReport}
@@ -1486,12 +1718,18 @@ function Reports({
   availableControls,
   processFilter,
   setProcessFilter,
+  businessProcessFilter,
+  setBusinessProcessFilter,
   statusFilter,
   setStatusFilter,
   evidenceFilter,
   setEvidenceFilter,
+  pillarFilter,
+  setPillarFilter,
   regionFilter,
   setRegionFilter,
+  countryFilter,
+  setCountryFilter,
   siteFilter,
   setSiteFilter,
   ownerFilter,
@@ -1504,6 +1742,8 @@ function Reports({
   setKeyFilter,
   frequencyFilter,
   setFrequencyFilter,
+  attestationFilter,
+  setAttestationFilter,
   scopeConfig,
   audience,
   setAudience,
@@ -1519,12 +1759,18 @@ function Reports({
   availableControls: InventoryControl[];
   processFilter: string;
   setProcessFilter: (v: string) => void;
+  businessProcessFilter: string;
+  setBusinessProcessFilter: (v: string) => void;
   statusFilter: string;
   setStatusFilter: (v: string) => void;
   evidenceFilter: string;
   setEvidenceFilter: (v: string) => void;
+  pillarFilter: string;
+  setPillarFilter: (v: string) => void;
   regionFilter: string;
   setRegionFilter: (v: string) => void;
+  countryFilter: string;
+  setCountryFilter: (v: string) => void;
   siteFilter: string;
   setSiteFilter: (v: string) => void;
   ownerFilter: string;
@@ -1537,6 +1783,8 @@ function Reports({
   setKeyFilter: (v: string) => void;
   frequencyFilter: string;
   setFrequencyFilter: (v: string) => void;
+  attestationFilter: string;
+  setAttestationFilter: (v: string) => void;
   scopeConfig: ScopeConfig;
   audience: Audience;
   setAudience: (v: Audience) => void;
@@ -1554,8 +1802,14 @@ function Reports({
   const controlTypes = Array.from(
     new Set(availableControls.map((c) => c.type)),
   ).sort();
+  const businessProcesses = Array.from(
+    new Set(availableControls.map((c) => c.businessProcess)),
+  ).sort();
   const frequencies = Array.from(
     new Set(availableControls.map((c) => c.frequency)),
+  ).sort();
+  const attestationFrequencies = Array.from(
+    new Set(availableControls.map((c) => c.attestationFrequency)),
   ).sort();
   const save = () => {
     const name = window
@@ -1569,32 +1823,44 @@ function Reports({
       ...savedViews,
       {
         name,
+        businessProcess: businessProcessFilter,
         process: processFilter,
         status: statusFilter,
         evidence: evidenceFilter,
         audience,
+        pillar: pillarFilter,
         region: regionFilter,
+        country: countryFilter,
         site: siteFilter,
         owner: ownerFilter,
         controlType: typeFilter,
         applicability: applicabilityFilter,
         keyControl: keyFilter,
         frequency: frequencyFilter,
+        attestationFrequency: attestationFilter,
       },
     ]);
     notify(`Saved “${name}”`);
   };
   const load = (view: SavedView) => {
+    setBusinessProcessFilter(
+      view.businessProcess || "All business processes",
+    );
     setProcessFilter(view.process);
     setStatusFilter(view.status);
     setEvidenceFilter(view.evidence);
+    setPillarFilter(view.pillar || "All control pillars");
     setRegionFilter(view.region || "All configured regions");
+    setCountryFilter(view.country || "All countries");
     setSiteFilter(view.site || "All configured sites");
     setOwnerFilter(view.owner || "All owners");
     setTypeFilter(view.controlType || "All control types");
     setApplicabilityFilter(view.applicability || "All applicability");
     setKeyFilter(view.keyControl || "All controls");
     setFrequencyFilter(view.frequency || "All frequencies");
+    setAttestationFilter(
+      view.attestationFrequency || "All attestation frequencies",
+    );
     setAudience(view.audience);
     notify(`Loaded “${view.name}”`);
   };
@@ -1637,6 +1903,18 @@ function Reports({
           </div>
           <div className="report-filters">
             <label>
+              Control pillar
+              <select
+                value={pillarFilter}
+                onChange={(e) => setPillarFilter(e.target.value)}
+              >
+                <option>All control pillars</option>
+                <option>ICE Controls</option>
+                <option>Sustainability Controls</option>
+                <option>Operating Controls</option>
+              </select>
+            </label>
+            <label>
               Region
               <select
                 value={
@@ -1653,7 +1931,19 @@ function Reports({
               </select>
             </label>
             <label>
-              Site / factory
+              Country
+              <select
+                value={countryFilter}
+                onChange={(e) => setCountryFilter(e.target.value)}
+              >
+                <option>All countries</option>
+                {scopeConfig.countries.map((country) => (
+                  <option key={country}>{country}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Unit / site
               <select
                 value={
                   scopeConfig.sites.includes(siteFilter)
@@ -1670,9 +1960,14 @@ function Reports({
             </label>
             <label>
               Business process
-              <select disabled>
-                <option>All processes</option>
-                <option>Inventory</option>
+              <select
+                value={businessProcessFilter}
+                onChange={(e) => setBusinessProcessFilter(e.target.value)}
+              >
+                <option>All business processes</option>
+                {businessProcesses.map((process) => (
+                  <option key={process}>{process}</option>
+                ))}
               </select>
             </label>
             <label>
@@ -1757,13 +2052,25 @@ function Reports({
               </select>
             </label>
             <label>
-              Frequency
+              Control frequency
               <select
                 value={frequencyFilter}
                 onChange={(e) => setFrequencyFilter(e.target.value)}
               >
                 <option>All frequencies</option>
                 {frequencies.map((frequency) => (
+                  <option key={frequency}>{frequency}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Attestation frequency
+              <select
+                value={attestationFilter}
+                onChange={(e) => setAttestationFilter(e.target.value)}
+              >
+                <option>All attestation frequencies</option>
+                {attestationFrequencies.map((frequency) => (
                   <option key={frequency}>{frequency}</option>
                 ))}
               </select>
@@ -2236,7 +2543,7 @@ function GapRemediation({
             >
               {controls.map((control) => (
                 <option value={control.id} key={control.id}>
-                  {control.id} · {control.name}
+                  {controlCode(control)} · {control.name}
                 </option>
               ))}
             </select>
@@ -2408,6 +2715,7 @@ function AdminSetup({
 }) {
   const [tab, setTab] = useState("Scope & structure");
   const [region, setRegion] = useState("");
+  const [country, setCountry] = useState("");
   const [site, setSite] = useState("");
   const [reminderLog, setReminderLog] = useState("");
   const [importPreview, setImportPreview] = useState<{
@@ -2426,7 +2734,9 @@ function AdminSetup({
   ) => {
     const cleaned = value.trim();
     if (!cleaned) {
-      notify(`Enter a ${kind === "sites" ? "site or factory" : "region"}`);
+      notify(
+        `Enter a ${kind === "sites" ? "unit or site" : kind === "countries" ? "country" : "region"}`,
+      );
       return;
     }
     if (
@@ -2443,7 +2753,7 @@ function AdminSetup({
     });
     clear();
     notify(
-      `${cleaned} added to ${kind === "sites" ? "sites & factories" : "regions"}`,
+      `${cleaned} added to ${kind === "sites" ? "units & sites" : kind}`,
     );
   };
   const removeScope = (kind: keyof ScopeConfig, value: string) => {
@@ -2462,36 +2772,50 @@ function AdminSetup({
   };
   const downloadTemplate = async () => {
     const headers = [
-      "Control ID",
-      "Control Name",
-      "Sub-process",
-      "Frequency",
-      "Control Type",
-      "Nature",
-      "Key Control (Y/N)",
-      "Applicable (Y/N)",
-      "Evidence Needed (Y/N)",
-      "Control Owner",
+      "Control Pillar",
       "Region",
-      "Site",
+      "Country",
+      "Unit",
+      "Control #",
+      "Business Process",
+      "Sub-Process",
+      "Control Name",
+      "Control Objective",
+      "Risk Description",
+      "Control Description",
+      "Control Owner",
+      "Control Frequency",
+      "Key Control?",
+      "Fraud Control?",
+      "Preventive / Detective",
+      "Control Type",
+      "Attestation Frequency",
+      "Evidence Needed (Y/N)",
       "Due Date",
     ];
     await writeXlsxFile(
       [
         headers.map((value) => ({ value, fontWeight: "bold" as const })),
         [
-          "INV.MF.01",
-          "Creation and Changes to Bill of Materials",
-          "Manufacturing",
-          "Event Based",
-          "Manual with IT Dependency",
-          "Preventive",
-          "Y",
-          "Y",
-          "Y",
+          "Sustainability Controls",
+          "EU",
+          "Netherlands",
+          "OBL",
+          "SUS.EN.01",
+          "Greenhouse Gas Emissions",
+          "Enablon",
+          "Review of Completed Questionnaires in Enablon",
+          "Questionnaires are complete, accurate and timely",
+          "Incomplete data may lead to inaccurate emissions reporting",
+          "Review source data, resolve discrepancies and retain evidence.",
           CURRENT_USER,
-          "Europe",
-          "Poznan Factory",
+          "Periodic / Quarterly / Annual",
+          "Y",
+          "N",
+          "Preventive",
+          "Manual with IT Dependency",
+          "Quarterly",
+          "Y",
           "2026-07-31",
         ].map((value) => ({ value })),
       ],
@@ -2506,11 +2830,16 @@ function AdminSetup({
       String(value || "").trim(),
     );
     const required = [
-      "Control ID",
+      "Control Pillar",
+      "Region",
+      "Country",
+      "Unit",
+      "Control #",
       "Control Name",
-      "Sub-process",
-      "Frequency",
-      "Evidence Needed (Y/N)",
+      "Business Process",
+      "Sub-Process",
+      "Control Frequency",
+      "Attestation Frequency",
     ];
     const missing = required.filter((header) => !headers.includes(header));
     const rows = sheet
@@ -2526,15 +2855,28 @@ function AdminSetup({
     const errors = missing.map((header) => `Missing column: ${header}`);
     const seen = new Set<string>();
     rows.forEach((cells, index) => {
-      const id = cells[headers.indexOf("Control ID")];
-      if (!id) errors.push(`Row ${index + 2}: Control ID is required`);
-      if (seen.has(id)) errors.push(`Row ${index + 2}: duplicate Control ID`);
+      const controlNumber = cells[headers.indexOf("Control #")];
+      const regionValue = cells[headers.indexOf("Region")];
+      const countryValue = cells[headers.indexOf("Country")];
+      const unitValue = cells[headers.indexOf("Unit")];
+      const id = makeInstanceId(
+        controlNumber,
+        regionValue,
+        countryValue,
+        unitValue,
+      );
+      if (!controlNumber)
+        errors.push(`Row ${index + 2}: Control # is required`);
+      if (seen.has(id))
+        errors.push(
+          `Row ${index + 2}: duplicate control instance (${controlNumber}, ${countryValue}, ${unitValue})`,
+        );
       seen.add(id);
       if (
         !controls.some((control) => control.id === id) &&
         (!cells[headers.indexOf("Control Name")] ||
-          !cells[headers.indexOf("Sub-process")] ||
-          !cells[headers.indexOf("Frequency")])
+          !cells[headers.indexOf("Sub-Process")] ||
+          !cells[headers.indexOf("Control Frequency")])
       )
         errors.push(
           `Row ${index + 2}: new controls require name, sub-process and frequency`,
@@ -2554,109 +2896,142 @@ function AdminSetup({
   };
   const applyImport = () => {
     if (!importPreview || importPreview.errors.length) return;
-    const headers = Object.keys(importPreview.rows[0] || {});
     const imported = new Map(
       importPreview.rows.map((row) => [
-        row["Control ID"],
-        headers.map((header) => row[header]),
+        makeInstanceId(
+          row["Control #"],
+          row["Region"],
+          row["Country"],
+          row["Unit"],
+        ),
+        row,
       ]),
     );
-    const importedSites = Array.from(imported.values())
-      .map((row) => row[headers.indexOf("Site")])
-      .filter((value): value is string => Boolean(value));
-    if (importedSites.length) {
-      setScopeConfig({
-        ...scopeConfig,
-        sites: Array.from(new Set([...scopeConfig.sites, ...importedSites])),
-      });
-    }
+    const importedRows = Array.from(imported.values());
+    setScopeConfig({
+      regions: Array.from(
+        new Set([
+          ...scopeConfig.regions,
+          ...importedRows.map((row) => row["Region"]).filter(Boolean),
+        ]),
+      ),
+      countries: Array.from(
+        new Set([
+          ...scopeConfig.countries,
+          ...importedRows.map((row) => row["Country"]).filter(Boolean),
+        ]),
+      ),
+      sites: Array.from(
+        new Set([
+          ...scopeConfig.sites,
+          ...importedRows.map((row) => row["Unit"]).filter(Boolean),
+        ]),
+      ),
+    });
     const yes = (value: string, fallback: boolean) =>
       value ? ["Y", "YES"].includes(value.toUpperCase()) : fallback;
-    const existing = controls.map((control) => {
-        const row = imported.get(control.id);
-        if (!row) return control;
-        imported.delete(control.id);
-        const requestedOwner = row[headers.indexOf("Control Owner")];
-        const owner = requestedOwner ? CURRENT_USER : "Unassigned";
-        return normalizeControl({
-          ...control,
-          name: row[headers.indexOf("Control Name")] || control.name,
-          process: row[headers.indexOf("Sub-process")] || control.process,
-          frequency: row[headers.indexOf("Frequency")] || control.frequency,
-          type: row[headers.indexOf("Control Type")] || control.type,
-          nature:
-            row[headers.indexOf("Nature")] === "Detective"
-              ? "Detective"
-              : control.nature,
-          keyControl: yes(
-            row[headers.indexOf("Key Control (Y/N)")],
-            control.keyControl,
-          ),
-          applicable: yes(
-            row[headers.indexOf("Applicable (Y/N)")],
-            control.applicable,
-          ),
-          owner,
-          region: row[headers.indexOf("Region")] || control.region,
-          site: row[headers.indexOf("Site")] || control.site,
-          unit: "Food & Nutrition",
-          due: row[headers.indexOf("Due Date")] || control.due,
-          evidenceRequired:
-            yes(
-              row[headers.indexOf("Evidence Needed (Y/N)")],
-              control.evidenceRequired,
-            ),
-          status: owner === "Unassigned" ? "Unassigned" : "Not started",
-        });
-      });
-    const added = Array.from(imported.values()).map((row) =>
-      normalizeControl({
-        id: row[headers.indexOf("Control ID")],
-        name: row[headers.indexOf("Control Name")],
-        process: row[headers.indexOf("Sub-process")],
-        frequency: row[headers.indexOf("Frequency")],
-        type: row[headers.indexOf("Control Type")] || "Manual",
-        nature:
-          row[headers.indexOf("Nature")] === "Detective"
-            ? "Detective"
-            : "Preventive",
-        keyControl: yes(row[headers.indexOf("Key Control (Y/N)")], false),
-        applicable: yes(row[headers.indexOf("Applicable (Y/N)")], true),
-        evidenceRequired: yes(
-          row[headers.indexOf("Evidence Needed (Y/N)")],
-          true,
+    const fromRow = (
+      row: Record<string, string>,
+      current?: InventoryControl,
+    ): InventoryControl => {
+      const owner = row["Control Owner"] || current?.owner || "Unassigned";
+      const attestationFrequency =
+        row["Attestation Frequency"] ||
+        current?.attestationFrequency ||
+        "Quarterly";
+      const controlNumber =
+        row["Control #"] || current?.controlNumber || current?.id || "";
+      const regionValue = row["Region"] || current?.region || "EU";
+      const countryValue = row["Country"] || current?.country || "";
+      const unitValue = row["Unit"] || current?.unit || "";
+      return normalizeControl({
+        ...(current || ({} as InventoryControl)),
+        id: makeInstanceId(
+          controlNumber,
+          regionValue,
+          countryValue,
+          unitValue,
         ),
-        owner: row[headers.indexOf("Control Owner")]
-          ? CURRENT_USER
-          : "Unassigned",
-        status: row[headers.indexOf("Control Owner")]
-          ? "Not started"
-          : "Unassigned",
-        due: row[headers.indexOf("Due Date")] || "Not scheduled",
-        dtpStatus: "Not added",
-        region: row[headers.indexOf("Region")] || "Europe",
-        site: row[headers.indexOf("Site")] || "",
-        unit: "Food & Nutrition",
-        instructions: "",
-        dtpSummary: "",
-        dtpOwner: "Controller Admin",
-        dtpVersion: "",
-        dtpLastReviewed: "",
-        dtpNextReview: "",
-        dtpDocument: "",
-      }),
-    );
+        controlNumber,
+        pillar:
+          row["Control Pillar"] === "Sustainability Controls"
+            ? "Sustainability Controls"
+            : row["Control Pillar"] === "Operating Controls"
+              ? "Operating Controls"
+              : current?.pillar || "ICE Controls",
+        name: row["Control Name"] || current?.name || controlNumber,
+        businessProcess:
+          row["Business Process"] || current?.businessProcess || "Other",
+        process: row["Sub-Process"] || current?.process || "Other",
+        objective: row["Control Objective"] || current?.objective || "",
+        riskDescription:
+          row["Risk Description"] || current?.riskDescription || "",
+        description:
+          row["Control Description"] || current?.description || "",
+        instructions:
+          row["Control Description"] || current?.instructions || "",
+        frequency:
+          row["Control Frequency"] || current?.frequency || "Periodic",
+        attestationFrequency,
+        type: row["Control Type"] || current?.type || "Manual",
+        nature:
+          row["Preventive / Detective"] === "Detective"
+            ? "Detective"
+            : current?.nature || "Preventive",
+        keyControl: yes(row["Key Control?"], current?.keyControl || false),
+        fraudControl: yes(
+          row["Fraud Control?"],
+          current?.fraudControl || false,
+        ),
+        applicable: current?.applicable ?? true,
+        evidenceRequired: yes(
+          row["Evidence Needed (Y/N)"],
+          current?.evidenceRequired ?? true,
+        ),
+        owner,
+        status:
+          owner === "Unassigned"
+            ? "Unassigned"
+            : current?.status === "Certified"
+              ? "Certified"
+              : "Acknowledgement pending",
+        due:
+          row["Due Date"] ||
+          current?.due ||
+          dueForFrequency(attestationFrequency),
+        region: regionValue,
+        country: countryValue,
+        unit: unitValue,
+        site: unitValue,
+        dtpStatus: current?.dtpStatus || "Not added",
+        dtpSummary: current?.dtpSummary || "",
+        dtpOwner: current?.dtpOwner || owner,
+        dtpVersion: current?.dtpVersion || "",
+        dtpLastReviewed: current?.dtpLastReviewed || "",
+        dtpNextReview: current?.dtpNextReview || "",
+        dtpDocument: current?.dtpDocument || "",
+        dtpHistory: current?.dtpHistory || [],
+      });
+    };
+    const existing = controls.map((control) => {
+      const row = imported.get(control.id);
+      if (!row) return control;
+      imported.delete(control.id);
+      return fromRow(row, control);
+    });
+    const added = Array.from(imported.values()).map((row) => fromRow(row));
     setControls([...existing, ...added]);
     setImportPreview(null);
     notify(
-      `${importPreview.rows.length} control rows imported · assignments mapped to Demo Account`,
+      `${importPreview.rows.length} control instances applied without replacing history`,
     );
   };
   const assigned = controls.filter((c) => c.owner !== "Unassigned").length;
   const addControl = () => {
-    const id = newControl.id.trim().toUpperCase();
+    const controlNumber = newControl.id.trim().toUpperCase();
+    const id = makeInstanceId(controlNumber, "EU", "Netherlands", "OBL");
     const name = newControl.name.trim();
-    if (!id || !name) {
+    if (!controlNumber || !name) {
       notify("Control ID and name are required");
       return;
     }
@@ -2668,20 +3043,29 @@ function AdminSetup({
       ...controls,
       normalizeControl({
         id,
+        controlNumber,
+        pillar: "ICE Controls",
         name,
+        businessProcess: "Inventory",
         process: newControl.process.trim() || "Inventory",
+        objective: "",
+        riskDescription: "",
+        description: "",
         frequency: "Periodic",
+        attestationFrequency: "Quarterly",
         keyControl: false,
+        fraudControl: false,
         nature: "Preventive",
         type: "Manual",
         evidenceRequired: true,
         owner: "Unassigned",
         status: "Unassigned",
-        due: "Not scheduled",
+        due: "2026-07-31",
         dtpStatus: "Not added",
-        region: "Europe",
-        site: "",
-        unit: "Food & Nutrition",
+        region: "EU",
+        country: "Netherlands",
+        site: "OBL",
+        unit: "OBL",
         instructions: "",
         applicable: true,
         dtpSummary: "",
@@ -2690,10 +3074,11 @@ function AdminSetup({
         dtpLastReviewed: "",
         dtpNextReview: "",
         dtpDocument: "",
+        dtpHistory: [],
       }),
     ]);
     setNewControl({ id: "", name: "", process: "Manufacturing" });
-    notify(`${id} added to the control library`);
+    notify(`${controlNumber} added to the OBL control library`);
   };
   return (
     <section className="workspace-view">
@@ -2742,7 +3127,21 @@ function AdminSetup({
                 </span>
               ))}
             </div>
-            <div className="scope-group-label">Sites & factories</div>
+            <div className="scope-group-label">Countries</div>
+            <div className="scope-tags">
+              {scopeConfig.countries.map((item) => (
+                <span key={item}>
+                  {item}
+                  <button
+                    aria-label={`Remove country ${item}`}
+                    onClick={() => removeScope("countries", item)}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+            <div className="scope-group-label">Units & sites</div>
             <div className="scope-tags site-tags">
               {scopeConfig.sites.length ? (
                 scopeConfig.sites.map((item) => (
@@ -2762,7 +3161,7 @@ function AdminSetup({
             </div>
             <div className="scope-form">
               <label>
-                Country or region
+                Region
                 <input
                   value={region}
                   onChange={(e) => setRegion(e.target.value)}
@@ -2775,11 +3174,26 @@ function AdminSetup({
                 Add
               </button>
               <label>
-                Site / factory
+                Country
+                <input
+                  value={country}
+                  onChange={(e) => setCountry(e.target.value)}
+                  placeholder="e.g. Netherlands"
+                />
+              </label>
+              <button
+                onClick={() =>
+                  addScope("countries", country, () => setCountry(""))
+                }
+              >
+                Add
+              </button>
+              <label>
+                Unit / site
                 <input
                   value={site}
                   onChange={(e) => setSite(e.target.value)}
-                  placeholder="Enter site or factory"
+                  placeholder="e.g. OBL"
                 />
               </label>
               <button
@@ -3092,6 +3506,7 @@ function ControlDrawer({
   role,
   period,
   attachments,
+  previousEvidence,
   close,
   updateControl,
   addAttachment,
@@ -3108,6 +3523,7 @@ function ControlDrawer({
   role: Role;
   period: string;
   attachments: string[];
+  previousEvidence: Array<{ period: string; file: string }>;
   close: () => void;
   updateControl: (id: string, updates: Partial<InventoryControl>) => void;
   addAttachment: (name: string) => void;
@@ -3128,7 +3544,19 @@ function ControlDrawer({
   const [acknowledgementSaved, setAcknowledgementSaved] = useState(
     Boolean(control.accepted && control.understood && control.acknowledgedAt),
   );
-  const [performed, setPerformed] = useState(control.performed || false);
+  const [executionOutcome, setExecutionOutcome] = useState<ExecutionOutcome>(
+    control.executionOutcome || "Not recorded",
+  );
+  const [deviationNotes, setDeviationNotes] = useState(
+    control.deviationNotes || "",
+  );
+  const [documentationReviewed, setDocumentationReviewed] = useState(
+    control.documentationReviewed || false,
+  );
+  const [dtpOpened, setDtpOpened] = useState(false);
+  const [progressSaved, setProgressSaved] = useState(
+    Boolean(control.draftSavedAt),
+  );
   const [draft, setDraft] = useState(control);
   const [showReassign, setShowReassign] = useState(false);
   const [newOwner, setNewOwner] = useState("");
@@ -3154,15 +3582,15 @@ function ControlDrawer({
       draft.owner === "Unassigned"
         ? "Unassigned"
         : draft.status === "Unassigned"
-          ? "Not started"
+          ? "Acknowledgement pending"
           : draft.status;
-    updateControl(control.id, { ...draft, status, unit: "Food & Nutrition" });
+    updateControl(control.id, { ...draft, status });
     appendAudit(
       control.id,
       "Control requirements updated",
       "Ownership, execution rules or guidance changed",
     );
-    notify(`${control.id} requirements saved`);
+    notify(`${controlCode(control)} requirements saved`);
   };
   const reassign = () => {
     if (!newOwner.trim() || !handover || !training) {
@@ -3183,18 +3611,23 @@ function ControlDrawer({
     setOwnershipChanges((current) => [change, ...current]);
     updateControl(control.id, {
       owner: change.toOwner,
-      status: "Not started",
+      status: "Acknowledgement pending",
       accepted: false,
       understood: false,
       acknowledgedAt: undefined,
       performed: false,
+      executionOutcome: "Not recorded",
+      deviationNotes: "",
+      draftSavedAt: undefined,
+      documentationReviewed: false,
+      documentationReviewedAt: undefined,
     });
     appendAudit(
       control.id,
       "Ownership reassigned",
       `${change.fromOwner} to ${change.toOwner}; handover and training confirmed`,
     );
-    notify(`${control.id} reassigned to ${change.toOwner}`);
+    notify(`${controlCode(control)} reassigned to ${change.toOwner}`);
     close();
   };
   const saveAcknowledgement = () => {
@@ -3215,9 +3648,82 @@ function ControlDrawer({
       "Ownership acknowledged",
       "Control Owner accepted accountability and confirmed understanding",
     );
-    notify(`${control.id} ownership acknowledgement saved`);
+    notify(`${controlCode(control)} ownership acknowledgement saved`);
+  };
+  const saveProgress = () => {
+    if (
+      executionOutcome === "Performed with deviations" &&
+      !deviationNotes.trim()
+    ) {
+      notify("Describe the deviation before saving progress");
+      return;
+    }
+    const timestamp = new Date().toISOString();
+    const performedNow =
+      executionOutcome === "Performed as documented" ||
+      executionOutcome === "Performed with deviations";
+    updateControl(control.id, {
+      accepted,
+      understood,
+      acknowledgedAt: acknowledgedAt || undefined,
+      performed: performedNow,
+      executionOutcome,
+      deviationNotes: deviationNotes.trim(),
+      documentationReviewed,
+      documentationReviewedAt: documentationReviewed ? timestamp : undefined,
+      draftSavedAt: timestamp,
+    });
+    setProgressSaved(true);
+    if (
+      executionOutcome === "Performed with deviations" &&
+      !gaps.some(
+        (gap) =>
+          gap.controlId === control.id &&
+          gap.period === period &&
+          gap.status !== "Closed",
+      )
+    ) {
+      setGaps((current) => [
+        {
+          id: crypto.randomUUID(),
+          controlId: control.id,
+          period,
+          title: "Execution deviated from the DTP",
+          description: deviationNotes.trim(),
+          severity: "Medium",
+          owner: draft.owner === "Unassigned" ? CURRENT_USER : draft.owner,
+          due: draft.due,
+          status: "Open",
+          closureEvidence: "",
+          controllerApproved: false,
+          createdAt: timestamp,
+        },
+        ...current,
+      ]);
+    }
+    appendAudit(
+      control.id,
+      "Control progress saved",
+      `${executionOutcome}; evidence files: ${attachments.length}`,
+    );
+    notify(`${controlCode(control)} progress saved for Controller visibility`);
   };
   const saveDtp = () => {
+    const changedVersion =
+      Boolean(control.dtpDocument || control.dtpVersion) &&
+      (control.dtpDocument !== draft.dtpDocument ||
+        control.dtpVersion !== draft.dtpVersion);
+    const dtpHistory = changedVersion
+      ? [
+          {
+            document: control.dtpDocument || "Inline procedure",
+            version: control.dtpVersion || "Unversioned",
+            owner: control.dtpOwner || "Unassigned",
+            reviewedAt: control.dtpLastReviewed || "Not recorded",
+          },
+          ...control.dtpHistory,
+        ]
+      : control.dtpHistory;
     updateControl(control.id, {
       dtpSummary: draft.dtpSummary,
       dtpOwner: draft.dtpOwner,
@@ -3226,13 +3732,15 @@ function ControlDrawer({
       dtpNextReview: draft.dtpNextReview,
       dtpDocument: draft.dtpDocument,
       dtpStatus: draft.dtpStatus,
+      dtpHistory,
     });
     appendAudit(
       control.id,
       "DTP guidance updated",
       `${draft.dtpDocument || "Inline procedure"} · ${draft.dtpVersion || "No version"}`,
     );
-    notify(`${control.id} DTP guidance saved`);
+    setDraft({ ...draft, dtpHistory });
+    notify(`${controlCode(control)} DTP guidance saved`);
   };
   const submitGap = () => {
     if (!gapRequest.title.trim() || !gapRequest.description.trim()) {
@@ -3301,7 +3809,7 @@ function ControlDrawer({
         </div>
         <div className="drawer-body">
           <span className="control-id">
-            {draft.id}
+            {controlCode(draft)} · {draft.country} · {draft.unit}
             {draft.keyControl && <b>Key control</b>}
           </span>
           <h2>{draft.name}</h2>
@@ -3348,38 +3856,143 @@ function ControlDrawer({
                   <span className="section-kicker">Controller Admin</span>
                   <h3>Control requirements</h3>
                 </div>
+                <div className="admin-meta-grid">
+                  <label>
+                    Control pillar
+                    <select
+                      value={draft.pillar}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          pillar: e.target.value as InventoryControl["pillar"],
+                        })
+                      }
+                    >
+                      <option>ICE Controls</option>
+                      <option>Sustainability Controls</option>
+                      <option>Operating Controls</option>
+                    </select>
+                  </label>
+                  <label>
+                    Country
+                    <select
+                      value={draft.country}
+                      onChange={(e) =>
+                        setDraft({ ...draft, country: e.target.value })
+                      }
+                    >
+                      {scopeConfig.countries.map((country) => (
+                        <option key={country}>{country}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Business process
+                    <input
+                      value={draft.businessProcess}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          businessProcess: e.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Sub-process
+                    <input
+                      value={draft.process}
+                      onChange={(e) =>
+                        setDraft({ ...draft, process: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Control frequency
+                    <input
+                      value={draft.frequency}
+                      onChange={(e) =>
+                        setDraft({ ...draft, frequency: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Attestation frequency
+                    <input
+                      value={draft.attestationFrequency}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          attestationFrequency: e.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+                <div className="admin-check-grid">
+                  <label className="admin-check">
+                    <input
+                      type="checkbox"
+                      checked={draft.keyControl}
+                      onChange={(e) =>
+                        setDraft({ ...draft, keyControl: e.target.checked })
+                      }
+                    />
+                    Key control
+                  </label>
+                  <label className="admin-check">
+                    <input
+                      type="checkbox"
+                      checked={draft.fraudControl}
+                      onChange={(e) =>
+                        setDraft({ ...draft, fraudControl: e.target.checked })
+                      }
+                    />
+                    Fraud control
+                  </label>
+                </div>
                 <label>
                   Control Owner
                   <select
-                    value={
-                      draft.owner === CURRENT_USER ? CURRENT_USER : "Unassigned"
-                    }
+                    value={draft.owner}
                     onChange={(e) =>
                       setDraft({ ...draft, owner: e.target.value })
                     }
                   >
                     <option value="Unassigned">Unassigned</option>
-                    <option value={CURRENT_USER}>{CURRENT_USER}</option>
+                    {Array.from(
+                      new Set([
+                        ...DEMO_OWNERS,
+                        ...(draft.owner !== "Unassigned" ? [draft.owner] : []),
+                      ]),
+                    ).map((owner) => (
+                      <option key={owner}>{owner}</option>
+                    ))}
                   </select>
                   <small className="field-note">
-                    Demo Account is the only assignable user in this MVP.
+                    Prototype directory only. Demo Account is the only
+                    assignable user until enterprise identity is connected.
                   </small>
                 </label>
                 <label>
-                  Site / factory
+                  Unit / site
                   <select
                     value={draft.site}
                     onChange={(e) =>
-                      setDraft({ ...draft, site: e.target.value })
+                      setDraft({
+                        ...draft,
+                        site: e.target.value,
+                        unit: e.target.value,
+                      })
                     }
                   >
-                    <option value="">Not mapped to a site</option>
+                    <option value="">Not mapped to a unit</option>
                     {scopeConfig.sites.map((site) => (
                       <option key={site}>{site}</option>
                     ))}
                   </select>
                   <small className="field-note">
-                    Drives the Site owners report and site filter.
+                    Drives unit reporting and the organization filters.
                   </small>
                 </label>
                 <label>
@@ -3415,12 +4028,45 @@ function ControlDrawer({
                     }
                   />
                 </label>
+                <details className="admin-detail-fields">
+                  <summary>Edit objective, risk and control description</summary>
+                  <label>
+                    Control objective
+                    <textarea
+                      value={draft.objective}
+                      onChange={(e) =>
+                        setDraft({ ...draft, objective: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Risk description
+                    <textarea
+                      value={draft.riskDescription}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          riskDescription: e.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Control description
+                    <textarea
+                      value={draft.description}
+                      onChange={(e) =>
+                        setDraft({ ...draft, description: e.target.value })
+                      }
+                    />
+                  </label>
+                </details>
                 <button onClick={saveAdmin}>Save control requirements</button>
               </section>
               <section className="drawer-section dtp-editor">
                 <div className="dtp-heading">
                   <span className="section-kicker">Desktop procedure</span>
-                  <h3>DTP guidance</h3>
+                  <h3>DTP guidance · Controller override</h3>
                   <p>
                     Capture the working steps here and attach the detailed
                     procedure when one exists. Control Owners see both in their
@@ -3624,6 +4270,19 @@ function ControlDrawer({
                     </small>
                   </span>
                 </div>
+                {draft.dtpStatus === "Current" && (
+                  <button
+                    className="secondary-button dtp-open-button"
+                    onClick={() => {
+                      setDtpOpened(true);
+                      notify(
+                        `${draft.dtpDocument || "Inline procedure"} opened in the prototype`,
+                      );
+                    }}
+                  >
+                    Open desktop procedure
+                  </button>
+                )}
                 {draft.dtpSummary && (
                   <p className="field-note">{draft.dtpSummary}</p>
                 )}
@@ -3659,23 +4318,163 @@ function ControlDrawer({
                     }}
                   />
                 </label>
-                <div className="execution-confirmation">
-                  <span className="section-kicker">Execution confirmation</span>
-                  <label className="check-card">
+                {previousEvidence.length > 0 && (
+                  <details className="previous-evidence">
+                    <summary>
+                      Previous-period evidence ({previousEvidence.length})
+                    </summary>
+                    {previousEvidence.slice(0, 8).map((item, index) => (
+                      <span key={`${item.period}-${item.file}-${index}`}>
+                        <strong>{item.file}</strong>
+                        <small>{item.period}</small>
+                      </span>
+                    ))}
+                  </details>
+                )}
+                {draft.dtpStatus === "Current" && (
+                  <label className="check-card documentation-check">
                     <input
                       type="checkbox"
-                      checked={performed}
-                      onChange={(e) => setPerformed(e.target.checked)}
+                      checked={documentationReviewed}
+                      disabled={!dtpOpened && !control.documentationReviewed}
+                      onChange={(e) => {
+                        setDocumentationReviewed(e.target.checked);
+                        setProgressSaved(false);
+                      }}
                     />
                     <span>
-                      <strong>The control was performed as documented</strong>
+                      <strong>I reviewed the current desktop procedure</strong>
                       <small>
-                        Complete this only after execution. Exceptions should
-                        be recorded and escalated where needed.
+                        Open the procedure above before recording this
+                        confirmation.
                       </small>
                     </span>
                   </label>
+                )}
+                <div className="execution-confirmation">
+                  <span className="section-kicker">Execution confirmation</span>
+                  <label className="outcome-field">
+                    Execution outcome
+                    <select
+                      value={executionOutcome}
+                      onChange={(e) => {
+                        setExecutionOutcome(e.target.value as ExecutionOutcome);
+                        setProgressSaved(false);
+                      }}
+                    >
+                      <option>Not recorded</option>
+                      <option>Performed as documented</option>
+                      <option>Performed with deviations</option>
+                      <option>Not performed</option>
+                    </select>
+                  </label>
+                  {executionOutcome === "Performed with deviations" && (
+                    <label className="outcome-field">
+                      Describe the deviation and immediate action
+                      <textarea
+                        rows={4}
+                        value={deviationNotes}
+                        onChange={(e) => {
+                          setDeviationNotes(e.target.value);
+                          setProgressSaved(false);
+                        }}
+                        placeholder="What differed from the procedure, what is the impact, and what action was taken?"
+                      />
+                    </label>
+                  )}
+                  <p className="field-note">
+                    Saving progress makes the outcome visible to Controllers.
+                    A deviation also creates an open remediation gap.
+                  </p>
+                  <button
+                    className="secondary-button save-progress"
+                    onClick={saveProgress}
+                  >
+                    {progressSaved
+                      ? "Execution progress saved"
+                      : "Save execution progress"}
+                  </button>
                 </div>
+                <details className="owner-dtp-maintenance">
+                  <summary>Propose a DTP update</summary>
+                  <p>
+                    Control Owners can maintain working guidance. Each saved
+                    replacement preserves the prior file/version in history.
+                  </p>
+                  <label className="dtp-procedure-field">
+                    Procedure steps
+                    <textarea
+                      rows={6}
+                      value={draft.dtpSummary}
+                      onChange={(e) =>
+                        setDraft({ ...draft, dtpSummary: e.target.value })
+                      }
+                    />
+                  </label>
+                  <div className="dtp-meta-grid">
+                    <label>
+                      Version
+                      <input
+                        value={draft.dtpVersion}
+                        onChange={(e) =>
+                          setDraft({ ...draft, dtpVersion: e.target.value })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Procedure owner
+                      <input
+                        value={draft.dtpOwner}
+                        onChange={(e) =>
+                          setDraft({ ...draft, dtpOwner: e.target.value })
+                        }
+                      />
+                    </label>
+                  </div>
+                  <label className="guidance-card file-card dtp-upload">
+                    <span>▤</span>
+                    <span>
+                      <strong>
+                        {draft.dtpDocument || "Attach a desktop procedure"}
+                      </strong>
+                      <small>
+                        Filename retained for this browser-based prototype
+                      </small>
+                    </span>
+                    <b>+</b>
+                    <input
+                      type="file"
+                      onChange={(e) => {
+                        if (e.target.files?.[0])
+                          setDraft({
+                            ...draft,
+                            dtpDocument: e.target.files[0].name,
+                            dtpStatus: "Current",
+                            dtpOwner:
+                              draft.dtpOwner === "Unassigned"
+                                ? CURRENT_USER
+                                : draft.dtpOwner,
+                          });
+                      }}
+                    />
+                  </label>
+                  <button
+                    className="primary-button owner-dtp-save"
+                    onClick={saveDtp}
+                  >
+                    Save DTP update
+                  </button>
+                  {draft.dtpHistory.length > 0 && (
+                    <div className="dtp-history">
+                      <strong>Version history</strong>
+                      {draft.dtpHistory.slice(0, 5).map((item, index) => (
+                        <span key={`${item.version}-${index}`}>
+                          {item.document} · {item.version} · {item.reviewedAt}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </details>
               </section>
               <section className="drawer-section">
                 <div>
@@ -3700,11 +4499,13 @@ function ControlDrawer({
                   <div className="reassign-form">
                     <label>
                       New Control Owner
-                      <input
+                      <select
                         value={newOwner}
                         onChange={(e) => setNewOwner(e.target.value)}
-                        placeholder="Enter new owner"
-                      />
+                      >
+                        <option value="">Select prototype owner</option>
+                        <option>{CURRENT_USER}</option>
+                      </select>
                     </label>
                     <label className="admin-check">
                       <input
@@ -3758,7 +4559,14 @@ function ControlDrawer({
               className="primary-button"
               disabled={
                 !acknowledgementSaved ||
-                !performed ||
+                !progressSaved ||
+                !(
+                  executionOutcome === "Performed as documented" ||
+                  executionOutcome === "Performed with deviations"
+                ) ||
+                (executionOutcome === "Performed with deviations" &&
+                  !deviationNotes.trim()) ||
+                (draft.dtpStatus === "Current" && !documentationReviewed) ||
                 (draft.evidenceRequired && attachments.length === 0)
               }
               onClick={() => {
@@ -3768,7 +4576,13 @@ function ControlDrawer({
                   accepted,
                   understood,
                   acknowledgedAt,
-                  performed,
+                  performed: true,
+                  executionOutcome,
+                  deviationNotes: deviationNotes.trim(),
+                  documentationReviewed,
+                  documentationReviewedAt: documentationReviewed
+                    ? new Date().toISOString()
+                    : undefined,
                   certifiedAt: new Date().toISOString(),
                 });
                 appendAudit(
@@ -3776,7 +4590,7 @@ function ControlDrawer({
                   "Control certified",
                   "Saved ownership acknowledgement, execution and evidence requirements confirmed",
                 );
-                notify(`${draft.id} certified`);
+                notify(`${controlCode(draft)} certified`);
                 close();
               }}
             >
@@ -3818,7 +4632,7 @@ function ControlDrawer({
                     : "Ask for guidance"}
                 </h2>
                 <p>
-                  {control.id} · {control.name}
+                  {controlCode(control)} · {control.name}
                 </p>
               </div>
               <button
@@ -4040,10 +4854,12 @@ function ControlTable({
               <tr key={control.id} onClick={() => openControl(control)}>
                 <td>
                   <div className="control-title">
-                    <span>{control.id}</span>
+                    <span>
+                      {controlCode(control)} · {control.country} · {control.unit}
+                    </span>
                     <strong>{control.name}</strong>
                     <small>
-                      {control.process} · {control.nature}
+                      {control.pillar} · {control.businessProcess} · {control.process} · {control.nature}
                       {control.keyControl ? " · Key" : ""}
                     </small>
                   </div>
@@ -4065,7 +4881,9 @@ function ControlTable({
                 </td>
                 <td>
                   <strong className="cell-main">{control.frequency}</strong>
-                  <small className="cell-sub">{control.type}</small>
+                  <small className="cell-sub">
+                    Attestation: {control.attestationFrequency}
+                  </small>
                 </td>
                 {showRules && (
                   <td>
@@ -4079,7 +4897,7 @@ function ControlTable({
                 )}
                 <td>
                   <strong className="cell-main">{control.due}</strong>
-                  <small className="cell-sub">Current period</small>
+                  <small className="cell-sub">{workflowStage(control)}</small>
                 </td>
                 <td>
                   <span className={`status ${statusClass[control.status]}`}>
@@ -4090,7 +4908,7 @@ function ControlTable({
                 <td>
                   <button
                     className="row-arrow"
-                    aria-label={`Open ${control.id}`}
+                    aria-label={`Open ${controlCode(control)} for ${control.unit}`}
                   >
                     ›
                   </button>

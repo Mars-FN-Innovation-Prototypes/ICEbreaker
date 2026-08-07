@@ -2414,6 +2414,121 @@ tbody tr:hover {
   font-weight: 800;
   cursor: pointer;
 }
+.admin-meta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.admin-meta-grid label,
+.admin-detail-fields label,
+.outcome-field,
+.owner-dtp-maintenance label {
+  display: grid;
+  gap: 6px;
+  color: #5f5853;
+  font-size: 8px;
+  font-weight: 800;
+}
+.admin-check-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.admin-detail-fields,
+.owner-dtp-maintenance,
+.previous-evidence {
+  grid-column: 1 / -1;
+  padding: 12px;
+  border: 1px solid #ddd5ce;
+  border-radius: 10px;
+  background: #fcfaf8;
+}
+.admin-detail-fields summary,
+.owner-dtp-maintenance summary,
+.previous-evidence summary {
+  color: var(--mars-blue);
+  font-size: 8.5px;
+  font-weight: 900;
+  cursor: pointer;
+}
+.admin-detail-fields[open],
+.owner-dtp-maintenance[open],
+.previous-evidence[open] {
+  display: grid;
+  gap: 11px;
+}
+.admin-detail-fields textarea,
+.outcome-field select,
+.outcome-field textarea,
+.owner-dtp-maintenance input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #d9d1ca;
+  border-radius: 8px;
+  background: white;
+  color: #393431;
+  font: inherit;
+  font-size: 9px;
+}
+.dtp-open-button,
+.save-progress,
+.owner-dtp-save {
+  width: 100%;
+  padding: 10px;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.documentation-check {
+  margin-top: 10px;
+}
+.documentation-check:has(input:disabled) {
+  opacity: 0.6;
+}
+.execution-confirmation {
+  display: grid;
+  gap: 10px;
+  margin-top: 13px;
+  padding: 13px;
+  border-radius: 11px;
+  background: #f6f3f0;
+}
+.owner-dtp-maintenance {
+  margin-top: 13px;
+}
+.owner-dtp-maintenance > p {
+  margin: 0;
+  color: #7c746e;
+  font-size: 8px;
+  line-height: 1.5;
+}
+.previous-evidence {
+  margin-top: 10px;
+}
+.previous-evidence > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid #e9e2dc;
+  font-size: 8px;
+}
+.previous-evidence small {
+  color: #817a74;
+}
+.dtp-history {
+  display: grid;
+  gap: 5px;
+  padding-top: 8px;
+  border-top: 1px solid #e2dbd5;
+  color: #77706a;
+  font-size: 7.5px;
+}
+.dtp-history > strong {
+  color: #3f3935;
+  font-size: 8px;
+}
 
 .request-dialog-scrim {
   position: fixed;
@@ -3667,5 +3782,10 @@ tbody tr:hover {
   }
   .visual-card {
     min-height: 0;
+  }
+  .admin-meta-grid,
+  .dtp-meta-grid,
+  .dtp-actions {
+    grid-template-columns: 1fr;
   }
 }

@@ -27,7 +27,9 @@ test("server-renders the scalable ICEbreaker control tower", async () => {
   assert.match(html, /<title>ICEbreaker \| Digitalized Controls Hub<\/title>/i);
   assert.match(html, /See risk sooner\. Act before it grows\./);
   assert.match(html, /Enterprise control health/i);
-  assert.match(html, /Creation and Changes to Bill of Materials/);
+  assert.match(html, /Review of Completed Questionnaires in Enablon/);
+  assert.match(html, /Controls in scope<\/span><strong>132/);
+  assert.match(html, /Sustainability Controls/);
   assert.match(html, /Needs your attention/);
   assert.match(html, /og:image/);
   assert.match(html, /https?:\/\/[^\"']+\/og\.png/);
@@ -50,12 +52,12 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /My controls/);
   assert.match(page, /Control Owner/);
   assert.match(page, /Demo Account/);
-  assert.match(page, /only assignable user in this MVP/);
+  assert.match(page, /only\s+assignable user until enterprise identity is connected/);
   assert.match(page, /Active review & reporting cycle/);
   assert.match(page, /icebreaker-scope/);
-  assert.match(page, /Sites & factories/);
-  assert.match(page, /Site \/ factory/);
-  assert.match(page, /Drives the Site owners report/);
+  assert.match(page, /Countries/);
+  assert.match(page, /Units & sites/);
+  assert.match(page, /Unit \/ site/);
   assert.match(page, /site-readiness-table/);
   assert.doesNotMatch(page, /Change application role/);
   assert.doesNotMatch(page, /Erica Schmidt/);
@@ -65,6 +67,10 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /Acknowledge & save/);
   assert.match(page, /return later to perform and\s+certify/);
   assert.match(page, /Ownership acknowledged/);
+  assert.match(page, /Save execution progress/);
+  assert.match(page, /Performed with deviations/);
+  assert.match(page, /I reviewed the current desktop procedure/);
+  assert.match(page, /Previous-period evidence/);
   assert.match(page, /Desktop procedure/);
   assert.match(page, /Simulated reminder/);
   assert.match(page, /MVP behavior: no email is sent/);
@@ -75,6 +81,8 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /localStorage/);
   assert.match(page, /importWorkbook/);
   assert.match(page, /Evidence Needed \(Y\/N\)/);
+  assert.match(page, /Attestation Frequency/);
+  assert.match(page, /Control Pillar/);
   assert.match(page, /Apply validated import/);
   assert.match(page, /Recent ownership changes/);
   assert.match(page, /Handover of responsibilities is complete/);
@@ -82,6 +90,8 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /Controller closure approval/);
   assert.match(page, /Procedure steps/);
   assert.match(page, /Save DTP guidance/);
+  assert.match(page, /Save DTP update/);
+  assert.match(page, /Version history/);
   assert.match(page, /What happens after submission/);
   assert.match(page, /Submit gap/);
   assert.match(page, /Submit request/);
@@ -100,10 +110,16 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(css, /prefers-reduced-motion/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 
-  const inventory = await readFile(
-    new URL("../app/inventory-controls.ts", import.meta.url),
-    "utf8",
-  );
-  assert.match(inventory, /INV\.PD\.01/);
-  assert.doesNotMatch(inventory, /INV\.CT\.06|INV\.CT\.09/);
+  const [inventory, fullData] = await Promise.all([
+    readFile(new URL("../app/inventory-controls.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/full-controls-data.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(inventory, /fullControlRows\.map/);
+  assert.match(inventory, /instanceId/);
+  assert.match(inventory, /Demo Account/);
+  assert.equal((fullData.match(/["']?controlNumber["']?:/g) || []).length, 133);
+  assert.match(fullData, /INV\.PD\.01/);
+  assert.match(fullData, /Sustainability Controls/);
+  assert.match(fullData, /"country": "Netherlands"/);
+  assert.match(fullData, /"country": "UK"/);
 });
