@@ -22,6 +22,7 @@ export type ControlExecution = {
   draftSavedAt?: string;
   documentationReviewed: boolean;
   documentationReviewedAt?: string;
+  reassignmentRequested: boolean;
   certifiedAt?: string;
 };
 
@@ -35,6 +36,7 @@ export type OwnershipChange = {
   changedAt: string;
   handoverConfirmed: boolean;
   trainingConfirmed: boolean;
+  status?: "Requested" | "Completed" | "Resolved";
 };
 
 export type GapSeverity = "Low" | "Medium" | "High" | "Critical";
@@ -90,6 +92,7 @@ export function defaultExecution(
     draftSavedAt: control.draftSavedAt,
     documentationReviewed: control.documentationReviewed || false,
     documentationReviewedAt: control.documentationReviewedAt,
+    reassignmentRequested: control.reassignmentRequested || false,
     certifiedAt: control.certifiedAt,
   };
 }
@@ -110,5 +113,6 @@ export const executionFields = new Set<keyof InventoryControl>([
   "draftSavedAt",
   "documentationReviewed",
   "documentationReviewedAt",
+  "reassignmentRequested",
   "certifiedAt",
 ]);

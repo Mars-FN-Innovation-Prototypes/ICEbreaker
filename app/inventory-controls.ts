@@ -31,6 +31,13 @@ export type ExecutionOutcome =
   | "Performed with deviations"
   | "Not performed";
 
+export type EvidenceRequirement =
+  | "Required"
+  | "Not required"
+  | "Not scoped";
+
+export type ControlLifecycle = "Active" | "Not applicable" | "Archived";
+
 export type InventoryControl = {
   /** Stable internal key for a control number in a specific organization scope. */
   id: string;
@@ -48,6 +55,7 @@ export type InventoryControl = {
   fraudControl: boolean;
   nature: "Preventive" | "Detective";
   type: string;
+  evidenceRequirement: EvidenceRequirement;
   evidenceRequired: boolean;
   owner: string;
   status: ControlStatus;
@@ -59,6 +67,7 @@ export type InventoryControl = {
   unit: string;
   instructions: string;
   applicable: boolean;
+  lifecycle: ControlLifecycle;
   dtpSummary: string;
   dtpOwner: string;
   dtpVersion: string;
@@ -75,6 +84,7 @@ export type InventoryControl = {
   draftSavedAt?: string;
   documentationReviewed?: boolean;
   documentationReviewedAt?: string;
+  reassignmentRequested?: boolean;
   certifiedAt?: string;
 };
 
@@ -123,9 +133,8 @@ export const inventoryControls: InventoryControl[] = fullControlRows.map(
       fraudControl: row.fraudControl,
       nature: row.nature,
       type: row.controlType,
-      evidenceRequired:
-        row.keyControl ||
-        /evidence|documentation|supporting/i.test(row.controlDescription),
+      evidenceRequirement: "Not scoped",
+      evidenceRequired: false,
       owner: assignedToDemo ? "Demo Account" : "Unassigned",
       status: assignedToDemo ? "Acknowledgement pending" : "Unassigned",
       due: dueForAttestation(row.attestationFrequency),
@@ -136,6 +145,7 @@ export const inventoryControls: InventoryControl[] = fullControlRows.map(
       unit: row.unit,
       instructions: row.controlDescription,
       applicable: true,
+      lifecycle: "Active",
       dtpSummary: "",
       dtpOwner: assignedToDemo ? "Demo Account" : "Unassigned",
       dtpVersion: "",

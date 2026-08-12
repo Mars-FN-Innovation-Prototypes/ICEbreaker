@@ -16,6 +16,7 @@ import {
   processCounts,
   type ControlStatus,
   type ExecutionOutcome,
+  type EvidenceRequirement,
   type InventoryControl,
 } from "./inventory-controls";
 import {
@@ -62,7 +63,7 @@ type SavedView = {
 
 const CURRENT_USER = "Demo Account";
 const DEMO_INITIALS = "DA";
-const DATA_VERSION = "full-control-instances-v1";
+const DATA_VERSION = "stakeholder-feedback-v2";
 const DEMO_OWNERS = [CURRENT_USER];
 const DEFAULT_SCOPE: ScopeConfig = {
   regions: ["EU"],
@@ -79,8 +80,12 @@ const normalizeControl = (control: InventoryControl): InventoryControl => ({
   description: control.description || control.instructions || "",
   attestationFrequency: control.attestationFrequency || control.frequency,
   fraudControl: control.fraudControl || false,
+  evidenceRequirement: control.evidenceRequirement || "Not scoped",
+  evidenceRequired: control.evidenceRequirement === "Required",
   country: control.country || "",
   applicable: control.applicable ?? true,
+  lifecycle:
+    control.lifecycle || (control.applicable === false ? "Not applicable" : "Active"),
   dtpSummary: control.dtpSummary || "",
   dtpOwner: control.dtpOwner || "Controller Admin",
   dtpVersion: control.dtpVersion || "",
@@ -91,6 +96,7 @@ const normalizeControl = (control: InventoryControl): InventoryControl => ({
   executionOutcome: control.executionOutcome || "Not recorded",
   deviationNotes: control.deviationNotes || "",
   documentationReviewed: control.documentationReviewed || false,
+  reassignmentRequested: control.reassignmentRequested || false,
 });
 const DEFAULT_VIEWS: SavedView[] = [
   {
@@ -151,19 +157,39 @@ const dueForFrequency = (frequency: string) => {
   return "2026-07-31";
 };
 
+const attestationSchedule = (frequency: string) => {
+  const normalized = frequency.toLowerCase();
+  if (normalized.includes("annual") && !normalized.includes("semi"))
+    return "Attest in the final quarter of the year";
+  if (normalized.includes("quarter")) return "Attest once each quarter";
+  if (normalized.includes("semi")) return "Attest twice each year";
+  if (normalized.includes("event")) return "Attest when the triggering event occurs";
+  return "Attest during each applicable Mars reporting period";
+};
+
+const evidenceLabel = (control: InventoryControl) =>
+  control.evidenceRequirement === "Required"
+    ? "Required"
+    : control.evidenceRequirement === "Not required"
+      ? "Not required"
+      : "Not yet scoped";
+
 const workflowStage = (
   control: InventoryControl,
   evidence: string[] = [],
 ) => {
   if (control.owner === "Unassigned") return "Unassigned";
+  if (control.reassignmentRequested) return "Reassignment requested";
   if (control.status === "Certified") return "Certified";
+  if (control.executionOutcome === "Not performed") return "Not performed";
   if (control.executionOutcome === "Performed with deviations")
     return "Performed with deviations";
   if (control.performed && control.evidenceRequired && !evidence.length)
     return "Performed · evidence missing";
-  if (control.performed) return "Ready to certify";
-  if (control.draftSavedAt) return "In progress";
-  if (control.accepted && control.understood) return "Acknowledged";
+  if (control.performed) return "Performed as documented";
+  if (control.accepted && control.understood) return "Understanding confirmed";
+  if (control.accepted) return "Ownership confirmed";
+  if (control.draftSavedAt) return "Draft started";
   return "Acknowledgement pending";
 };
 
@@ -178,6 +204,7 @@ const derivedStatus = (
     ? new Date(`${control.due}T23:59:59`)
     : null;
   if (due && due.getTime() < Date.now()) return "Overdue";
+  if (control.executionOutcome === "Not performed") return "In progress";
   if (control.executionOutcome === "Performed with deviations")
     return "Performed with deviations";
   if (control.performed && control.evidenceRequired && !evidence.length)
@@ -553,7 +580,11 @@ export default function IcebreakerApp() {
   }, [scopeConfig, hydrated]);
 
   const mine = useMemo(
-    () => controls.filter((control) => control.owner === CURRENT_USER),
+    () =>
+      controls.filter(
+        (control) =>
+          control.owner === CURRENT_USER && control.lifecycle === "Active",
+      ),
     [controls],
   );
   const filtered = useMemo(
@@ -584,8 +615,10 @@ export default function IcebreakerApp() {
           (typeFilter === "All control types" || control.type === typeFilter) &&
           (applicabilityFilter === "All applicability" ||
             (applicabilityFilter === "Applicable"
-              ? control.applicable
-              : !control.applicable)) &&
+              ? control.lifecycle === "Active"
+              : applicabilityFilter === "Not applicable"
+                ? control.lifecycle === "Not applicable"
+                : control.lifecycle === "Archived")) &&
           (keyFilter === "All controls" ||
             (keyFilter === "Key controls"
               ? control.keyControl
@@ -596,8 +629,10 @@ export default function IcebreakerApp() {
             control.attestationFrequency === attestationFilter) &&
           (evidenceFilter === "All evidence rules" ||
             (evidenceFilter === "Evidence required"
-              ? control.evidenceRequired
-              : !control.evidenceRequired))
+              ? control.evidenceRequirement === "Required"
+              : evidenceFilter === "Evidence not required"
+                ? control.evidenceRequirement === "Not required"
+                : control.evidenceRequirement === "Not scoped"))
         );
       }),
     [
@@ -705,6 +740,7 @@ export default function IcebreakerApp() {
           draftSavedAt: control.draftSavedAt,
           documentationReviewed: control.documentationReviewed || false,
           documentationReviewedAt: control.documentationReviewedAt,
+          reassignmentRequested: control.reassignmentRequested || false,
           certifiedAt: control.certifiedAt,
         };
       });
@@ -731,17 +767,21 @@ export default function IcebreakerApp() {
         "Control type",
         "Key control",
         "Fraud control",
-        "Applicable",
-        "Evidence required",
+        "Lifecycle",
+        "Evidence requirement",
         "Control Owner",
         "Region",
         "Country",
         "Unit",
-        "Ownership acknowledged",
+        "Ownership confirmed",
+        "Understanding confirmed",
         "Acknowledged at",
         "Status",
         "Workflow stage",
+        "Owner draft saved at",
+        "Reassignment requested",
         "Documentation reviewed",
+        "Owner DTP review confirmed at",
         "Execution outcome",
         "Deviation notes",
         "Evidence files",
@@ -759,20 +799,24 @@ export default function IcebreakerApp() {
         c.type,
         c.keyControl ? "Yes" : "No",
         c.fraudControl ? "Yes" : "No",
-        c.applicable ? "Yes" : "No",
-        c.evidenceRequired ? "Yes" : "No",
+        c.lifecycle,
+        c.evidenceRequirement,
         c.owner,
         c.region,
         c.country,
         c.unit,
-        c.accepted && c.understood ? "Yes" : "No",
+        c.accepted ? "Yes" : "No",
+        c.understood ? "Yes" : "No",
         c.acknowledgedAt || "",
         c.status,
         workflowStage(
           c,
           attachments[executionKey(period, c.id)] || [],
         ),
+        c.draftSavedAt || "",
+        c.reassignmentRequested ? "Yes" : "No",
         c.documentationReviewed ? "Yes" : "No",
+        c.documentationReviewedAt || "",
         c.executionOutcome || "Not recorded",
         c.deviationNotes || "",
         (attachments[executionKey(period, c.id)] || []).join("; "),
@@ -924,7 +968,9 @@ export default function IcebreakerApp() {
           </section>
           {activeNav === "Control tower" && (
             <ControlTower
-              controls={controls}
+              controls={controls.filter(
+                (control) => control.lifecycle === "Active",
+              )}
               openControl={setSelected}
               setActiveNav={setActiveNav}
             />
@@ -1030,11 +1076,15 @@ export default function IcebreakerApp() {
             role={role}
             period={period}
             attachments={
-              attachments[executionKey(period, selected.id)] || []
+              role === "Controller Admin" || selected.owner === CURRENT_USER
+                ? attachments[executionKey(period, selected.id)] || []
+                : []
             }
             previousEvidence={Object.entries(attachments)
               .filter(
                 ([key, files]) =>
+                  (role === "Controller Admin" ||
+                    selected.owner === CURRENT_USER) &&
                   key.endsWith(`::${selected.id}`) &&
                   key !== executionKey(period, selected.id) &&
                   files.length > 0,
@@ -1054,7 +1104,6 @@ export default function IcebreakerApp() {
               }))
             }
             notify={notify}
-            changeRole={changeRole}
             scopeConfig={scopeConfig}
             ownershipChanges={ownershipChanges}
             setOwnershipChanges={setOwnershipChanges}
@@ -1164,8 +1213,8 @@ function OverlayPanel({
                 <span>Control Owner</span>
                 <strong>Accept → understand → perform → certify</strong>
                 <p>
-                  Works only from assigned controls and uploads evidence where
-                  required.
+                  Saves acknowledgement separately, can save partial drafts,
+                  follows the DTP and adds evidence where required.
                 </p>
               </article>
             </div>
@@ -1185,8 +1234,8 @@ function OverlayPanel({
                 <span>
                   <strong>Execute the control</strong>
                   <small>
-                    The owner follows instructions and the local desktop
-                    procedure (DTP).
+                    The owner can save a partial draft, follow the local DTP,
+                    attach evidence or a SharePoint link, and report deviations.
                   </small>
                 </span>
               </li>
@@ -1195,8 +1244,8 @@ function OverlayPanel({
                 <span>
                   <strong>Certify and monitor</strong>
                   <small>
-                    Status updates flow into the Control tower and audience
-                    reporting.
+                    Detailed workflow stages, exceptions and reassignment
+                    requests flow into Controller dashboards and reporting.
                   </small>
                 </span>
               </li>
@@ -1302,40 +1351,161 @@ function ControlTower({
   openControl: (c: InventoryControl) => void;
   setActiveNav: (n: Nav) => void;
 }) {
-  const certified = controls.filter((c) => c.status === "Certified").length;
-  const assigned = controls.filter((c) => c.owner !== "Unassigned").length;
-  const completion = controls.length
-    ? Math.round((certified / controls.length) * 100)
+  const [towerPillar, setTowerPillar] = useState("All controls");
+  const visibleControls = controls.filter(
+    (control) =>
+      towerPillar === "All controls" || control.pillar === towerPillar,
+  );
+  const certified = visibleControls.filter(
+    (c) => c.status === "Certified",
+  ).length;
+  const assigned = visibleControls.filter(
+    (c) => c.owner !== "Unassigned",
+  ).length;
+  const completion = visibleControls.length
+    ? Math.round((certified / visibleControls.length) * 100)
     : 0;
-  const attention = controls
+  const attentionPriority: Record<string, number> = {
+    Overdue: 0,
+    "Performed with deviations": 1,
+    "Evidence needed": 2,
+    Unassigned: 3,
+  };
+  const attention = visibleControls
     .filter((c) => c.status !== "Certified")
+    .sort(
+      (a, b) =>
+        (attentionPriority[a.status] ?? 9) -
+        (attentionPriority[b.status] ?? 9),
+    )
     .slice(0, 3);
+  const stageCounts = [
+    [
+      "Unassigned / reassign",
+      visibleControls.filter(
+        (c) => c.owner === "Unassigned" || c.reassignmentRequested,
+      ).length,
+      "neutral",
+    ],
+    [
+      "Ownership confirmed",
+      visibleControls.filter((c) => c.accepted).length,
+      "blue",
+    ],
+    [
+      "Understanding confirmed",
+      visibleControls.filter((c) => c.understood).length,
+      "water",
+    ],
+    [
+      "Not performed",
+      visibleControls.filter((c) => c.executionOutcome === "Not performed")
+        .length,
+      "danger",
+    ],
+    [
+      "Performed as documented",
+      visibleControls.filter(
+        (c) => c.executionOutcome === "Performed as documented",
+      ).length,
+      "green",
+    ],
+    [
+      "Performed with deviations",
+      visibleControls.filter(
+        (c) => c.executionOutcome === "Performed with deviations",
+      ).length,
+      "orange",
+    ],
+    [
+      "Evidence missing",
+      visibleControls.filter((c) => c.status === "Evidence needed").length,
+      "orange",
+    ],
+    [
+      "Ready to certify",
+      visibleControls.filter((c) => c.status === "Ready to certify").length,
+      "green",
+    ],
+    [
+      "Certified",
+      visibleControls.filter((c) => c.status === "Certified").length,
+      "green",
+    ],
+    [
+      "Overdue",
+      visibleControls.filter((c) => c.status === "Overdue").length,
+      "danger",
+    ],
+  ] as const;
   return (
     <>
+      <div className="pillar-tabs" aria-label="Control Tower pillar view">
+        {[
+          "All controls",
+          "ICE Controls",
+          "Sustainability Controls",
+          "Operating Controls",
+        ].map((pillar) => (
+          <button
+            key={pillar}
+            className={towerPillar === pillar ? "active" : ""}
+            onClick={() => setTowerPillar(pillar)}
+          >
+            {pillar.replace(" Controls", "")}
+            <span>
+              {pillar === "All controls"
+                ? controls.length
+                : controls.filter((control) => control.pillar === pillar).length}
+            </span>
+          </button>
+        ))}
+      </div>
       <section className="metrics">
         <Metric
           label="Controls in scope"
-          value={`${controls.length}`}
-          note="Configured ICE controls"
+          value={`${visibleControls.length}`}
+          note={towerPillar === "All controls" ? "All active pillars" : towerPillar}
         />
         <Metric
           label="Ownership assigned"
-          value={`${assigned}/${controls.length}`}
+          value={`${assigned}/${visibleControls.length}`}
           note="Control Owner coverage"
           tone="green"
         />
         <Metric
-          label="Evidence required"
-          value={`${controls.filter((c) => c.evidenceRequired).length}`}
-          note="Admin-configurable rules"
+          label="Evidence rules scoped"
+          value={`${visibleControls.filter((c) => c.evidenceRequirement !== "Not scoped").length}/${visibleControls.length}`}
+          note="Upload or Controller configured"
           tone="orange"
         />
         <Metric
           label="DTP coverage"
-          value={`${controls.filter((c) => c.dtpStatus === "Current").length}/${controls.length}`}
+          value={`${visibleControls.filter((c) => c.dtpStatus === "Current").length}/${visibleControls.length}`}
           note="Desktop procedures current"
           tone="water"
         />
+      </section>
+      <section className="panel workflow-status-panel">
+        <div className="panel-heading">
+          <div>
+            <span className="section-kicker">Detailed workflow status</span>
+            <h2>Stage and exception visibility</h2>
+          </div>
+          <small>Stages may overlap with exception flags such as overdue.</small>
+        </div>
+        <div className="workflow-status-grid">
+          {stageCounts.map(([label, count, tone]) => (
+            <button
+              key={label}
+              className={`workflow-status-card ${tone}`}
+              onClick={() => setActiveNav("Reports")}
+            >
+              <strong>{count}</strong>
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
       </section>
       <section className="dashboard-grid">
         <article className="panel health-panel">
@@ -1364,21 +1534,14 @@ function ControlTower({
               </div>
             </div>
             <div className="legend">
-              {(
-                [
-                  "Certified",
-                  "Not started",
-                  "Evidence needed",
-                  "Unassigned",
-                ] as ControlStatus[]
-              ).map((status) => (
+              {(["Certified", "In progress", "Overdue", "Unassigned"] as ControlStatus[]).map((status) => (
                 <div key={status}>
                   <span
-                    className={`legend-dot ${status === "Certified" ? "on-track" : status === "Evidence needed" ? "at-risk" : status === "Unassigned" ? "overdue" : "in-review"}`}
+                    className={`legend-dot ${status === "Certified" ? "on-track" : status === "Overdue" ? "overdue" : status === "Unassigned" ? "at-risk" : "in-review"}`}
                   />
                   <span>{status}</span>
                   <strong>
-                    {controls.filter((c) => c.status === status).length}
+                    {visibleControls.filter((c) => c.status === status).length}
                   </strong>
                 </div>
               ))}
@@ -1414,7 +1577,7 @@ function ControlTower({
               <h2>Needs your attention</h2>
             </div>
             <span className="count-badge">
-              {controls.filter((c) => c.status !== "Certified").length} items
+              {visibleControls.filter((c) => c.status !== "Certified").length} items
             </span>
           </div>
           {attention.map((control) => (
@@ -1423,11 +1586,15 @@ function ControlTower({
               key={control.id}
               onClick={() => openControl(control)}
             >
-              <span className="alert-icon warning-bg">?</span>
+              <span
+                className={`alert-icon ${control.status === "Overdue" ? "danger-bg" : "warning-bg"}`}
+              >
+                {control.status === "Overdue" ? "!" : "?"}
+              </span>
               <span>
                 <strong>{control.status}</strong>
                 <small>
-                  {control.id} · {control.process} · {control.due}
+                  {controlCode(control)} · {control.unit} · Due {control.due}
                 </small>
               </span>
               <b>›</b>
@@ -1442,8 +1609,8 @@ function ControlTower({
         </article>
       </section>
       <ControlTable
-        controls={controls.slice(0, 8)}
-        title="Controls ready for configuration"
+        controls={visibleControls.slice(0, 8)}
+        title={`${towerPillar.replace(" Controls", "")} controls ready for review`}
         openControl={openControl}
         onExport={() => setActiveNav("Reports")}
       />
@@ -1460,7 +1627,28 @@ function MyControls({
   openControl: (c: InventoryControl) => void;
   setActiveNav: (n: Nav) => void;
 }) {
+  const [queueFilter, setQueueFilter] = useState("All assigned");
   const certified = controls.filter((c) => c.status === "Certified").length;
+  const overdue = controls.filter((c) => c.status === "Overdue").length;
+  const dueSoon = controls.filter((c) => c.status === "Due soon").length;
+  const queue = controls
+    .filter((control) => {
+      if (queueFilter === "Overdue") return control.status === "Overdue";
+      if (queueFilter === "Due soon") return control.status === "Due soon";
+      if (queueFilter === "Drafts") return Boolean(control.draftSavedAt);
+      return true;
+    })
+    .sort((a, b) => {
+      const priority = (control: InventoryControl) =>
+        control.status === "Overdue"
+          ? 0
+          : control.status === "Due soon"
+            ? 1
+            : control.draftSavedAt
+              ? 2
+              : 3;
+      return priority(a) - priority(b);
+    });
   return (
     <section className="workspace-view">
       <div className="view-metrics">
@@ -1477,15 +1665,9 @@ function MyControls({
           <small>Accept and understand</small>
         </article>
         <article>
-          <span>Need attention</span>
-          <strong>
-            {
-              controls.filter(
-                (c) => c.status === "Overdue" || c.status === "Evidence needed",
-              ).length
-            }
-          </strong>
-          <small>Act before due date</small>
+          <span>Overdue</span>
+          <strong className={overdue ? "danger-number" : ""}>{overdue}</strong>
+          <small>Past the required due date</small>
         </article>
         <article>
           <span>Certified</span>
@@ -1503,9 +1685,24 @@ function MyControls({
               </div>
               <span className="count-badge">{controls.length} assigned</span>
             </div>
-            {controls.map((control, index) => (
+            <div className="owner-queue-tabs">
+              {["All assigned", "Overdue", "Due soon", "Drafts"].map(
+                (filter) => (
+                  <button
+                    key={filter}
+                    className={queueFilter === filter ? "active" : ""}
+                    onClick={() => setQueueFilter(filter)}
+                  >
+                    {filter}
+                    {filter === "Overdue" && overdue > 0 && <span>{overdue}</span>}
+                    {filter === "Due soon" && dueSoon > 0 && <span>{dueSoon}</span>}
+                  </button>
+                ),
+              )}
+            </div>
+            {queue.map((control, index) => (
               <button
-                className="work-item"
+                className={`work-item ${control.status === "Overdue" ? "overdue-work-item" : ""}`}
                 key={control.id}
                 onClick={() => openControl(control)}
               >
@@ -1515,18 +1712,28 @@ function MyControls({
                 <span>
                   <strong>{control.name}</strong>
                   <small>
-                    {control.id} · {control.process} · {control.due}
+                    {controlCode(control)} · {control.unit} · Due {control.due}
+                  </small>
+                  <small>
+                    Attestation: {control.attestationFrequency} ·{" "}
+                    {attestationSchedule(control.attestationFrequency)}
                   </small>
                 </span>
                 <span className={`status ${statusClass[control.status]}`}>
                   <i />
-                  {!control.accepted || !control.understood
-                    ? "Acknowledge"
-                    : control.status}
+                  {control.status === "Overdue"
+                    ? "Overdue"
+                    : workflowStage(control)}
                 </span>
                 <b>›</b>
               </button>
             ))}
+            {queue.length === 0 && (
+              <div className="empty-state compact-empty">
+                <strong>No controls in this view.</strong>
+                <span>Choose another queue filter to continue.</span>
+              </div>
+            )}
           </article>
           <OwnerJourney controls={controls} />
         </div>
@@ -1687,7 +1894,8 @@ function ControlsLibrary({
           >
             <option>All evidence rules</option>
             <option>Evidence required</option>
-            <option>Certification only</option>
+            <option>Evidence not required</option>
+            <option>Evidence not scoped</option>
           </select>
         </label>
         <button
@@ -1864,6 +2072,23 @@ function Reports({
     setAudience(view.audience);
     notify(`Loaded “${view.name}”`);
   };
+  const clearFilters = () => {
+    setBusinessProcessFilter("All business processes");
+    setProcessFilter("All processes");
+    setStatusFilter("All statuses");
+    setEvidenceFilter("All evidence rules");
+    setPillarFilter("All control pillars");
+    setRegionFilter("All configured regions");
+    setCountryFilter("All countries");
+    setSiteFilter("All configured sites");
+    setOwnerFilter("All owners");
+    setTypeFilter("All control types");
+    setApplicabilityFilter("All applicability");
+    setKeyFilter("All controls");
+    setFrequencyFilter("All frequencies");
+    setAttestationFilter("All attestation frequencies");
+    notify("All report filters cleared");
+  };
   return (
     <section className="workspace-view">
       <div className="audience-tabs">
@@ -1892,9 +2117,14 @@ function Reports({
               <span className="section-kicker">Advanced filters</span>
               <h2>Build a reporting view</h2>
             </div>
-            <button className="primary-small" onClick={save}>
-              Save this view
-            </button>
+            <div className="report-heading-actions">
+              <button className="secondary-small" onClick={clearFilters}>
+                Clear all filters
+              </button>
+              <button className="primary-small" onClick={save}>
+                Save this view
+              </button>
+            </div>
           </div>
           <div className="scope-lock">
             <span>Business segment</span>
@@ -2002,7 +2232,8 @@ function Reports({
               >
                 <option>All evidence rules</option>
                 <option>Evidence required</option>
-                <option>Certification only</option>
+                <option>Evidence not required</option>
+                <option>Evidence not scoped</option>
               </select>
             </label>
             <label>
@@ -2038,6 +2269,7 @@ function Reports({
                 <option>All applicability</option>
                 <option>Applicable</option>
                 <option>Not applicable</option>
+                <option>Archived</option>
               </select>
             </label>
             <label>
@@ -2126,7 +2358,7 @@ function Reports({
             <div className="panel-heading">
               <div>
                 <span className="section-kicker">Accountability trail</span>
-                <h2>Recent ownership changes</h2>
+                <h2>Recent ownership activity</h2>
               </div>
               <span>{ownershipChanges.length} recorded</span>
             </div>
@@ -2135,9 +2367,11 @@ function Reports({
                 <div className="change-row" key={change.id}>
                   <span>{change.controlId}</span>
                   <strong>
+                    {change.status === "Requested" ? "Request: " : ""}
                     {change.fromOwner} → {change.toOwner}
                   </strong>
                   <small>
+                    {change.status || "Completed"} ·{" "}
                     {change.period} · Handover{" "}
                     {change.handoverConfirmed ? "confirmed" : "missing"} ·
                     Training{" "}
@@ -2147,8 +2381,8 @@ function Reports({
               ))
             ) : (
               <div className="empty-state">
-                <strong>No ownership changes recorded.</strong>
-                <span>Confirmed reassignments will appear here.</span>
+                <strong>No ownership activity recorded.</strong>
+                <span>Reassignment requests and completed changes appear here.</span>
               </div>
             )}
           </article>
@@ -2314,7 +2548,9 @@ function AudienceDashboard({
             ["Certified", certified],
             [
               "Evidence rules set",
-              controls.filter((c) => c.evidenceRequired).length,
+              controls.filter(
+                (c) => c.evidenceRequirement !== "Not scoped",
+              ).length,
             ],
           ].map(([label, value]) => (
             <div key={String(label)}>
@@ -2338,7 +2574,10 @@ function AudienceDashboard({
               (c) =>
                 c.owner === "Unassigned" ||
                 c.status === "Overdue" ||
-                c.status === "Evidence needed",
+                c.status === "Evidence needed" ||
+                c.executionOutcome === "Performed with deviations" ||
+                c.executionOutcome === "Not performed" ||
+                c.reassignmentRequested,
             ).length
           }
         </div>
@@ -2357,8 +2596,16 @@ function AudienceDashboard({
             <strong>Phase 1</strong>
           </div>
           <div>
+            <span>Ownership requests</span>
+            <strong>Phase 1</strong>
+          </div>
+          <div>
+            <span>Deviation detail</span>
+            <strong>Phase 1</strong>
+          </div>
+          <div>
             <span>Gap remediation trend</span>
-            <strong>Phase 2</strong>
+            <strong>Parked</strong>
           </div>
         </div>
       </article>
@@ -2791,6 +3038,7 @@ function AdminSetup({
       "Control Type",
       "Attestation Frequency",
       "Evidence Needed (Y/N)",
+      "Lifecycle",
       "Due Date",
     ];
     await writeXlsxFile(
@@ -2816,6 +3064,7 @@ function AdminSetup({
           "Manual with IT Dependency",
           "Quarterly",
           "Y",
+          "Active",
           "2026-07-31",
         ].map((value) => ({ value })),
       ],
@@ -2944,6 +3193,17 @@ function AdminSetup({
       const regionValue = row["Region"] || current?.region || "EU";
       const countryValue = row["Country"] || current?.country || "";
       const unitValue = row["Unit"] || current?.unit || "";
+      const evidenceValue = row["Evidence Needed (Y/N)"]?.trim();
+      const evidenceRequirement: EvidenceRequirement = evidenceValue
+        ? yes(evidenceValue, false)
+          ? "Required"
+          : "Not required"
+        : current?.evidenceRequirement || "Not scoped";
+      const lifecycleValue = row["Lifecycle"]?.trim();
+      const lifecycle =
+        lifecycleValue === "Archived" || lifecycleValue === "Not applicable"
+          ? lifecycleValue
+          : current?.lifecycle || "Active";
       return normalizeControl({
         ...(current || ({} as InventoryControl)),
         id: makeInstanceId(
@@ -2983,11 +3243,10 @@ function AdminSetup({
           row["Fraud Control?"],
           current?.fraudControl || false,
         ),
-        applicable: current?.applicable ?? true,
-        evidenceRequired: yes(
-          row["Evidence Needed (Y/N)"],
-          current?.evidenceRequired ?? true,
-        ),
+        lifecycle,
+        applicable: lifecycle === "Active",
+        evidenceRequirement,
+        evidenceRequired: evidenceRequirement === "Required",
         owner,
         status:
           owner === "Unassigned"
@@ -3057,7 +3316,8 @@ function AdminSetup({
         fraudControl: false,
         nature: "Preventive",
         type: "Manual",
-        evidenceRequired: true,
+        evidenceRequirement: "Not scoped",
+        evidenceRequired: false,
         owner: "Unassigned",
         status: "Unassigned",
         due: "2026-07-31",
@@ -3068,6 +3328,7 @@ function AdminSetup({
         unit: "OBL",
         instructions: "",
         applicable: true,
+        lifecycle: "Active",
         dtpSummary: "",
         dtpOwner: "Controller Admin",
         dtpVersion: "",
@@ -3257,9 +3518,13 @@ function AdminSetup({
             </span>
             <span>
               <strong>
-                {controls.filter((c) => c.evidenceRequired).length}
+                {
+                  controls.filter(
+                    (c) => c.evidenceRequirement !== "Not scoped",
+                  ).length
+                }
               </strong>{" "}
-              evidence required
+              evidence rules scoped
             </span>
             <span>
               <strong>
@@ -3316,18 +3581,23 @@ function AdminSetup({
                   <strong>{control.name}</strong>
                   <small>{control.process}</small>
                 </button>
-                <label className="toggle-label">
-                  <input
-                    type="checkbox"
-                    checked={control.evidenceRequired}
-                    onChange={(e) =>
+                <label className="compact-select-label">
+                  Evidence
+                  <select
+                    value={control.evidenceRequirement}
+                    onChange={(e) => {
+                      const evidenceRequirement = e.target
+                        .value as EvidenceRequirement;
                       updateControl(control.id, {
-                        evidenceRequired: e.target.checked,
-                      })
-                    }
-                  />
-                  <span />
-                  Evidence required
+                        evidenceRequirement,
+                        evidenceRequired: evidenceRequirement === "Required",
+                      });
+                    }}
+                  >
+                    <option>Not scoped</option>
+                    <option>Required</option>
+                    <option>Not required</option>
+                  </select>
                 </label>
                 <button
                   className="manage-button"
@@ -3335,23 +3605,27 @@ function AdminSetup({
                 >
                   Manage guidance
                 </button>
-                <button
-                  className="manage-button danger-link"
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        `Remove ${control.id} from the control library?`,
-                      )
-                    ) {
-                      setControls(
-                        controls.filter((item) => item.id !== control.id),
+                <label className="compact-select-label lifecycle-select">
+                  Lifecycle
+                  <select
+                    value={control.lifecycle}
+                    onChange={(e) => {
+                      const lifecycle = e.target
+                        .value as InventoryControl["lifecycle"];
+                      updateControl(control.id, {
+                        lifecycle,
+                        applicable: lifecycle === "Active",
+                      });
+                      notify(
+                        `${controlCode(control)} marked ${lifecycle.toLowerCase()} · history retained`,
                       );
-                      notify(`${control.id} removed`);
-                    }
-                  }}
-                >
-                  Remove
-                </button>
+                    }}
+                  >
+                    <option>Active</option>
+                    <option>Not applicable</option>
+                    <option>Archived</option>
+                  </select>
+                </label>
                 <span
                   className={`dtp-badge ${control.dtpStatus === "Current" ? "current" : "needs"}`}
                 >
@@ -3511,7 +3785,6 @@ function ControlDrawer({
   updateControl,
   addAttachment,
   notify,
-  changeRole,
   scopeConfig,
   ownershipChanges,
   setOwnershipChanges,
@@ -3528,7 +3801,6 @@ function ControlDrawer({
   updateControl: (id: string, updates: Partial<InventoryControl>) => void;
   addAttachment: (name: string) => void;
   notify: (m: string) => void;
-  changeRole: (r: Role) => void;
   scopeConfig: ScopeConfig;
   ownershipChanges: OwnershipChange[];
   setOwnershipChanges: Dispatch<SetStateAction<OwnershipChange[]>>;
@@ -3562,9 +3834,11 @@ function ControlDrawer({
   const [newOwner, setNewOwner] = useState("");
   const [handover, setHandover] = useState(false);
   const [training, setTraining] = useState(false);
+  const [evidenceLink, setEvidenceLink] = useState("");
   const [requestModal, setRequestModal] = useState<
     "gap" | "guidance" | null
   >(null);
+  const [showDtpPreview, setShowDtpPreview] = useState(false);
   const [gapRequest, setGapRequest] = useState({
     title: "",
     description: "",
@@ -3578,13 +3852,28 @@ function ControlDrawer({
     question: "",
   });
   const saveAdmin = () => {
+    const assignmentChanged = draft.owner !== control.owner;
     const status: ControlStatus =
       draft.owner === "Unassigned"
         ? "Unassigned"
         : draft.status === "Unassigned"
           ? "Acknowledgement pending"
           : draft.status;
-    updateControl(control.id, { ...draft, status });
+    updateControl(control.id, {
+      ...draft,
+      status,
+      reassignmentRequested:
+        assignmentChanged ? false : draft.reassignmentRequested,
+    });
+    if (assignmentChanged && control.reassignmentRequested) {
+      setOwnershipChanges((current) =>
+        current.map((change) =>
+          change.controlId === control.id && change.status === "Requested"
+            ? { ...change, toOwner: draft.owner, status: "Completed" }
+            : change,
+        ),
+      );
+    }
     appendAudit(
       control.id,
       "Control requirements updated",
@@ -3593,6 +3882,10 @@ function ControlDrawer({
     notify(`${controlCode(control)} requirements saved`);
   };
   const reassign = () => {
+    if (draft.owner !== CURRENT_USER) {
+      notify("Only the assigned Control Owner can request reassignment");
+      return;
+    }
     if (!newOwner.trim() || !handover || !training) {
       notify("New owner, handover and training confirmation are required");
       return;
@@ -3607,30 +3900,43 @@ function ControlDrawer({
       changedAt: new Date().toISOString(),
       handoverConfirmed: handover,
       trainingConfirmed: training,
+      status: "Requested",
     };
     setOwnershipChanges((current) => [change, ...current]);
-    updateControl(control.id, {
-      owner: change.toOwner,
-      status: "Acknowledgement pending",
-      accepted: false,
-      understood: false,
-      acknowledgedAt: undefined,
-      performed: false,
-      executionOutcome: "Not recorded",
-      deviationNotes: "",
-      draftSavedAt: undefined,
-      documentationReviewed: false,
-      documentationReviewedAt: undefined,
-    });
+    updateControl(control.id, { reassignmentRequested: true });
+    setDraft({ ...draft, reassignmentRequested: true });
     appendAudit(
       control.id,
-      "Ownership reassigned",
-      `${change.fromOwner} to ${change.toOwner}; handover and training confirmed`,
+      "Reassignment requested",
+      `${change.fromOwner} requested ${change.toOwner}; handover and training readiness confirmed`,
     );
-    notify(`${controlCode(control)} reassigned to ${change.toOwner}`);
-    close();
+    notify(
+      `${controlCode(control)} reassignment request sent to the Controller team`,
+    );
+    setShowReassign(false);
+  };
+  const resolveReassignmentRequest = () => {
+    updateControl(control.id, { reassignmentRequested: false });
+    setDraft({ ...draft, reassignmentRequested: false });
+    setOwnershipChanges((current) =>
+      current.map((change) =>
+        change.controlId === control.id && change.status === "Requested"
+          ? { ...change, status: "Resolved" }
+          : change,
+      ),
+    );
+    appendAudit(
+      control.id,
+      "Reassignment request resolved",
+      "Controller reviewed the request and retained the prototype assignment",
+    );
+    notify(`${controlCode(control)} reassignment request resolved`);
   };
   const saveAcknowledgement = () => {
+    if (draft.owner !== CURRENT_USER) {
+      notify("This control is read-only because it is not assigned to Demo Account");
+      return;
+    }
     if (!accepted || !understood) {
       notify("Confirm ownership and understanding before acknowledging");
       return;
@@ -3651,11 +3957,8 @@ function ControlDrawer({
     notify(`${controlCode(control)} ownership acknowledgement saved`);
   };
   const saveProgress = () => {
-    if (
-      executionOutcome === "Performed with deviations" &&
-      !deviationNotes.trim()
-    ) {
-      notify("Describe the deviation before saving progress");
+    if (draft.owner !== CURRENT_USER) {
+      notify("Only the assigned Control Owner can save an execution draft");
       return;
     }
     const timestamp = new Date().toISOString();
@@ -3663,56 +3966,56 @@ function ControlDrawer({
       executionOutcome === "Performed as documented" ||
       executionOutcome === "Performed with deviations";
     updateControl(control.id, {
-      accepted,
-      understood,
-      acknowledgedAt: acknowledgedAt || undefined,
+      accepted: acknowledgementSaved || control.accepted || false,
+      understood: acknowledgementSaved || control.understood || false,
+      acknowledgedAt:
+        acknowledgementSaved || control.acknowledgedAt
+          ? acknowledgedAt || control.acknowledgedAt
+          : undefined,
       performed: performedNow,
       executionOutcome,
       deviationNotes: deviationNotes.trim(),
       documentationReviewed,
-      documentationReviewedAt: documentationReviewed ? timestamp : undefined,
+      documentationReviewedAt: documentationReviewed
+        ? control.documentationReviewedAt || timestamp
+        : undefined,
       draftSavedAt: timestamp,
     });
     setProgressSaved(true);
-    if (
-      executionOutcome === "Performed with deviations" &&
-      !gaps.some(
-        (gap) =>
-          gap.controlId === control.id &&
-          gap.period === period &&
-          gap.status !== "Closed",
-      )
-    ) {
-      setGaps((current) => [
-        {
-          id: crypto.randomUUID(),
-          controlId: control.id,
-          period,
-          title: "Execution deviated from the DTP",
-          description: deviationNotes.trim(),
-          severity: "Medium",
-          owner: draft.owner === "Unassigned" ? CURRENT_USER : draft.owner,
-          due: draft.due,
-          status: "Open",
-          closureEvidence: "",
-          controllerApproved: false,
-          createdAt: timestamp,
-        },
-        ...current,
-      ]);
-    }
     appendAudit(
       control.id,
-      "Control progress saved",
+      "Control draft saved",
       `${executionOutcome}; evidence files: ${attachments.length}`,
     );
-    notify(`${controlCode(control)} progress saved for Controller visibility`);
+    notify(`${controlCode(control)} draft saved for Controller visibility`);
   };
-  const saveDtp = () => {
+  const attachEvidenceLink = () => {
+    if (draft.owner !== CURRENT_USER) {
+      notify("Only the assigned Control Owner can add period evidence");
+      return;
+    }
+    const link = evidenceLink.trim();
+    if (!/^https?:\/\//i.test(link)) {
+      notify("Paste a complete SharePoint or evidence URL beginning with https://");
+      return;
+    }
+    addAttachment(link);
+    setEvidenceLink("");
+    notify("Evidence link added");
+  };
+  const saveDtp = (nextDraft: InventoryControl = draft) => {
+    if (
+      role !== "Controller Admin" &&
+      draft.owner !== CURRENT_USER &&
+      draft.dtpOwner !== CURRENT_USER
+    ) {
+      notify("Only the assigned Control Owner or procedure owner can maintain this DTP");
+      return;
+    }
     const changedVersion =
       Boolean(control.dtpDocument || control.dtpVersion) &&
-      (control.dtpDocument !== draft.dtpDocument ||
-        control.dtpVersion !== draft.dtpVersion);
+      (control.dtpDocument !== nextDraft.dtpDocument ||
+        control.dtpVersion !== nextDraft.dtpVersion);
     const dtpHistory = changedVersion
       ? [
           {
@@ -3725,22 +4028,46 @@ function ControlDrawer({
         ]
       : control.dtpHistory;
     updateControl(control.id, {
-      dtpSummary: draft.dtpSummary,
-      dtpOwner: draft.dtpOwner,
-      dtpVersion: draft.dtpVersion,
-      dtpLastReviewed: draft.dtpLastReviewed,
-      dtpNextReview: draft.dtpNextReview,
-      dtpDocument: draft.dtpDocument,
-      dtpStatus: draft.dtpStatus,
+      dtpSummary: nextDraft.dtpSummary,
+      dtpOwner: nextDraft.dtpOwner,
+      dtpVersion: nextDraft.dtpVersion,
+      dtpLastReviewed: nextDraft.dtpLastReviewed,
+      dtpNextReview: nextDraft.dtpNextReview,
+      dtpDocument: nextDraft.dtpDocument,
+      dtpStatus: nextDraft.dtpStatus,
       dtpHistory,
+      documentationReviewed: false,
+      documentationReviewedAt: undefined,
     });
     appendAudit(
       control.id,
       "DTP guidance updated",
-      `${draft.dtpDocument || "Inline procedure"} · ${draft.dtpVersion || "No version"}`,
+      `${nextDraft.dtpDocument || "Inline procedure"} · ${nextDraft.dtpVersion || "No version"}`,
     );
-    setDraft({ ...draft, dtpHistory });
+    setDraft({ ...nextDraft, dtpHistory });
+    setDocumentationReviewed(false);
+    setDtpOpened(false);
+    setProgressSaved(false);
     notify(`${controlCode(control)} DTP guidance saved`);
+  };
+  const confirmDtpCurrent = () => {
+    if (!draft.dtpSummary.trim() && !draft.dtpDocument) {
+      notify("Add procedure steps or attach a document before confirming current");
+      return;
+    }
+    const nextDraft: InventoryControl = {
+      ...draft,
+      dtpStatus: "Current",
+      dtpLastReviewed: new Date().toISOString().slice(0, 10),
+      dtpOwner:
+        draft.dtpOwner === "Unassigned" ? CURRENT_USER : draft.dtpOwner,
+    };
+    saveDtp(nextDraft);
+    appendAudit(
+      control.id,
+      "DTP confirmed current",
+      `${nextDraft.dtpOwner} confirmed the procedure current`,
+    );
   };
   const submitGap = () => {
     if (!gapRequest.title.trim() || !gapRequest.description.trim()) {
@@ -3792,6 +4119,40 @@ function ControlDrawer({
     setGuidanceRequest({ ...guidanceRequest, question: "" });
     notify("Guidance request submitted to the Controller team");
   };
+  const isAssignedOwner = draft.owner === CURRENT_USER;
+  const canMaintainDtp =
+    role === "Controller Admin" ||
+    isAssignedOwner ||
+    draft.dtpOwner === CURRENT_USER;
+  const certificationBlockers = [
+    draft.lifecycle !== "Active"
+      ? `This control is ${draft.lifecycle.toLowerCase()} for this scope.`
+      : "",
+    !isAssignedOwner ? "This control is not assigned to Demo Account." : "",
+    !acknowledgementSaved ? "Save the ownership acknowledgement." : "",
+    !progressSaved ? "Save the latest execution draft." : "",
+    draft.reassignmentRequested
+      ? "A reassignment request is awaiting Controller review."
+      : "",
+    draft.evidenceRequirement === "Not scoped"
+      ? "The Controller must scope the evidence requirement."
+      : "",
+    !(
+      executionOutcome === "Performed as documented" ||
+      executionOutcome === "Performed with deviations"
+    )
+      ? "Record a performed execution outcome."
+      : "",
+    executionOutcome === "Performed with deviations" && !deviationNotes.trim()
+      ? "Describe the deviation and immediate action."
+      : "",
+    draft.dtpStatus === "Current" && !documentationReviewed
+      ? "Review and confirm the current DTP."
+      : "",
+    draft.evidenceRequired && attachments.length === 0
+      ? "Attach the required execution evidence."
+      : "",
+  ].filter(Boolean);
   return (
     <>
       <button
@@ -3824,13 +4185,18 @@ function ControlDrawer({
               <strong>{draft.process}</strong>
             </div>
             <div>
-              <span>Frequency</span>
+              <span>Control frequency</span>
               <strong>{draft.frequency}</strong>
+            </div>
+            <div>
+              <span>Attestation frequency</span>
+              <strong>{draft.attestationFrequency}</strong>
+              <small>{attestationSchedule(draft.attestationFrequency)}</small>
             </div>
             <div>
               <span>Evidence</span>
               <strong>
-                {draft.evidenceRequired ? "Required" : "Certification only"}
+                {evidenceLabel(draft)}
               </strong>
             </div>
             <div>
@@ -3848,9 +4214,100 @@ function ControlDrawer({
                 }
               </strong>
             </div>
+            <div>
+              <span>Due date</span>
+              <strong>{draft.due}</strong>
+            </div>
+            <div>
+              <span>Current workflow</span>
+              <strong>{workflowStage(draft, attachments)}</strong>
+            </div>
           </div>
+          {role === "Control Owner" && derivedStatus(draft, attachments) === "Overdue" && (
+            <div className="owner-overdue-alert">
+              <span>!</span>
+              <div>
+                <strong>This control is overdue</strong>
+                <p>
+                  It was due {draft.due}. Save a draft now if work is underway,
+                  or ask the Controller team for guidance if execution is
+                  blocked.
+                </p>
+              </div>
+            </div>
+          )}
           {role === "Controller Admin" ? (
             <>
+              <section className="drawer-section controller-execution-readout">
+                <div className="controller-readout-heading">
+                  <div>
+                    <span className="section-kicker">Current period</span>
+                    <h3>Owner progress & exceptions</h3>
+                  </div>
+                  <span className={`status ${statusClass[derivedStatus(draft)]}`}>
+                    <i />
+                    {workflowStage(draft)}
+                  </span>
+                </div>
+                <div className="controller-readout-grid">
+                  <div>
+                    <span>Ownership</span>
+                    <strong>{draft.accepted ? "Confirmed" : "Pending"}</strong>
+                  </div>
+                  <div>
+                    <span>Understanding</span>
+                    <strong>{draft.understood ? "Confirmed" : "Pending"}</strong>
+                  </div>
+                  <div>
+                    <span>Execution</span>
+                    <strong>{draft.executionOutcome}</strong>
+                  </div>
+                  <div>
+                    <span>Evidence</span>
+                    <strong>{attachments.length} attached</strong>
+                  </div>
+                  <div>
+                    <span>Owner draft</span>
+                    <strong>
+                      {draft.draftSavedAt
+                        ? new Date(draft.draftSavedAt).toLocaleString()
+                        : "Not saved"}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Due</span>
+                    <strong>{draft.due}</strong>
+                  </div>
+                </div>
+                {draft.deviationNotes && (
+                  <div className="controller-deviation-alert">
+                    <span>!</span>
+                    <div>
+                      <strong>Owner reported an execution deviation</strong>
+                      <p>{draft.deviationNotes}</p>
+                    </div>
+                  </div>
+                )}
+                {draft.reassignmentRequested && (
+                  <div className="controller-reassignment-alert">
+                    <span>→</span>
+                    <div>
+                      <strong>Owner requested reassignment</strong>
+                      <p>
+                        Review the ownership activity in Reports. Update the
+                        owner where appropriate, or retain the current owner
+                        and resolve the request here.
+                      </p>
+                      <button
+                        className="secondary-small"
+                        onClick={resolveReassignmentRequest}
+                      >
+                        Keep current owner & resolve
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
               <section className="drawer-section admin-editor">
                 <div>
                   <span className="section-kicker">Controller Admin</span>
@@ -4008,15 +4465,53 @@ function ControlDrawer({
                     }
                   />
                 </label>
-                <label className="admin-check">
-                  <input
-                    type="checkbox"
-                    checked={draft.evidenceRequired}
+                <label>
+                  Evidence requirement
+                  <select
+                    value={draft.evidenceRequirement}
+                    onChange={(e) => {
+                      const evidenceRequirement = e.target
+                        .value as EvidenceRequirement;
+                      setDraft({
+                        ...draft,
+                        evidenceRequirement,
+                        evidenceRequired: evidenceRequirement === "Required",
+                      });
+                    }}
+                  >
+                    <option>Not scoped</option>
+                    <option>Required</option>
+                    <option>Not required</option>
+                  </select>
+                  <small className="field-note">
+                    Set explicitly here or through mass upload; the app never
+                    infers this rule.
+                  </small>
+                </label>
+                <label>
+                  Control lifecycle
+                  <select
+                    value={draft.lifecycle}
                     onChange={(e) =>
-                      setDraft({ ...draft, evidenceRequired: e.target.checked })
+                      {
+                        const lifecycle = e.target
+                          .value as InventoryControl["lifecycle"];
+                        setDraft({
+                          ...draft,
+                          lifecycle,
+                          applicable: lifecycle === "Active",
+                        });
+                      }
                     }
-                  />{" "}
-                  Evidence required
+                  >
+                    <option>Active</option>
+                    <option>Not applicable</option>
+                    <option>Archived</option>
+                  </select>
+                  <small className="field-note">
+                    Archive retains history without showing the control in
+                    active queues.
+                  </small>
                 </label>
                 <label>
                   Execution instructions
@@ -4111,7 +4606,7 @@ function ControlDrawer({
                     />
                   </label>
                   <label>
-                    Last reviewed
+                    Procedure last reviewed
                     <input
                       type="date"
                       value={draft.dtpLastReviewed}
@@ -4137,6 +4632,20 @@ function ControlDrawer({
                     />
                   </label>
                 </div>
+                <label className="dtp-reference-field">
+                  Document or SharePoint reference
+                  <input
+                    value={draft.dtpDocument}
+                    onChange={(e) =>
+                      setDraft({ ...draft, dtpDocument: e.target.value })
+                    }
+                    placeholder="Filename or https://..."
+                  />
+                  <small>
+                    A governed URL opens directly; uploaded files retain their
+                    filename in this browser prototype.
+                  </small>
+                </label>
                 <label className="guidance-card file-card dtp-upload">
                   <span>▤</span>
                   <span>
@@ -4165,20 +4674,15 @@ function ControlDrawer({
                   />
                 </label>
                 <div className="dtp-actions">
-                  <button className="primary-button" onClick={saveDtp}>
+                  <button
+                    className="primary-button"
+                    onClick={() => saveDtp()}
+                  >
                     Save DTP guidance
                   </button>
                   <button
                     className="secondary-button"
-                    onClick={() =>
-                      setDraft({
-                        ...draft,
-                        dtpStatus: "Current",
-                        dtpLastReviewed: new Date()
-                          .toISOString()
-                          .slice(0, 10),
-                      })
-                    }
+                    onClick={confirmDtpCurrent}
                   >
                     Confirm current
                   </button>
@@ -4187,6 +4691,19 @@ function ControlDrawer({
             </>
           ) : (
             <>
+              {!isAssignedOwner && (
+                <div className="read-only-control-note">
+                  <span>◇</span>
+                  <div>
+                    <strong>Library preview · read-only</strong>
+                    <p>
+                      This control is not assigned to Demo Account. You can
+                      review its requirement and DTP, but only the assigned
+                      owner can acknowledge, save execution or add evidence.
+                    </p>
+                  </div>
+                </div>
+              )}
               <section className="drawer-section">
                 <div>
                   <span className="section-kicker">Required confirmations</span>
@@ -4201,6 +4718,7 @@ function ControlDrawer({
                   <input
                     type="checkbox"
                     checked={accepted}
+                    disabled={!isAssignedOwner}
                     onChange={(e) => {
                       setAccepted(e.target.checked);
                       setAcknowledgementSaved(false);
@@ -4217,6 +4735,7 @@ function ControlDrawer({
                   <input
                     type="checkbox"
                     checked={understood}
+                    disabled={!isAssignedOwner}
                     onChange={(e) => {
                       setUnderstood(e.target.checked);
                       setAcknowledgementSaved(false);
@@ -4233,7 +4752,10 @@ function ControlDrawer({
                   <button
                     className="primary-button"
                     disabled={
-                      !accepted || !understood || acknowledgementSaved
+                      !isAssignedOwner ||
+                      !accepted ||
+                      !understood ||
+                      acknowledgementSaved
                     }
                     onClick={saveAcknowledgement}
                   >
@@ -4247,6 +4769,65 @@ function ControlDrawer({
                     </span>
                   )}
                 </div>
+                {isAssignedOwner && <div className="ownership-decision">
+                  <div>
+                    <strong>Is this control assigned correctly?</strong>
+                    <small>
+                      Continue when it is yours, or request a Controller-led
+                      reassignment without changing the live assignment.
+                    </small>
+                  </div>
+                  <button
+                    className="secondary-button"
+                    onClick={() => setShowReassign(!showReassign)}
+                  >
+                    {showReassign ? "Cancel request" : "Request reassignment"}
+                  </button>
+                </div>}
+                {draft.reassignmentRequested && (
+                  <div className="reassignment-requested">
+                    <strong>Reassignment request submitted</strong>
+                    <span>
+                      The Controller team can see the flag and ownership trail.
+                      You remain the assigned owner until they update it.
+                    </span>
+                  </div>
+                )}
+                {isAssignedOwner && showReassign && (
+                  <div className="reassign-form owner-reassign-form">
+                    <label>
+                      Requested owner or team
+                      <input
+                        value={newOwner}
+                        onChange={(e) => setNewOwner(e.target.value)}
+                        placeholder="Name, role or team for Controller review"
+                      />
+                    </label>
+                    <label className="admin-check">
+                      <input
+                        type="checkbox"
+                        checked={handover}
+                        onChange={(e) => setHandover(e.target.checked)}
+                      />
+                      I will complete the responsibility handover
+                    </label>
+                    <label className="admin-check">
+                      <input
+                        type="checkbox"
+                        checked={training}
+                        onChange={(e) => setTraining(e.target.checked)}
+                      />
+                      I will ensure training and a procedure walkthrough occur
+                    </label>
+                    <button className="primary-button" onClick={reassign}>
+                      Submit reassignment request
+                    </button>
+                    <small>
+                      Prototype behavior: this creates a Controller-visible
+                      request; it does not assign a non-demo user.
+                    </small>
+                  </div>
+                )}
               </section>
               <section className="drawer-section">
                 <div>
@@ -4270,14 +4851,32 @@ function ControlDrawer({
                     </small>
                   </span>
                 </div>
+                <div className="procedure-review-meta">
+                  <span>
+                    <small>Procedure owner</small>
+                    <strong>{draft.dtpOwner || "Unassigned"}</strong>
+                  </span>
+                  <span>
+                    <small>Procedure last reviewed</small>
+                    <strong>{draft.dtpLastReviewed || "Not recorded"}</strong>
+                  </span>
+                  <span>
+                    <small>Your review confirmation</small>
+                    <strong>
+                      {control.documentationReviewedAt
+                        ? new Date(
+                            control.documentationReviewedAt,
+                          ).toLocaleString()
+                        : "Not confirmed"}
+                    </strong>
+                  </span>
+                </div>
                 {draft.dtpStatus === "Current" && (
                   <button
                     className="secondary-button dtp-open-button"
                     onClick={() => {
                       setDtpOpened(true);
-                      notify(
-                        `${draft.dtpDocument || "Inline procedure"} opened in the prototype`,
-                      );
+                      setShowDtpPreview(true);
                     }}
                   >
                     Open desktop procedure
@@ -4292,13 +4891,13 @@ function ControlDrawer({
                     <strong>{draft.instructions}</strong>
                   </div>
                 )}
+                {isAssignedOwner ? (
+                  <>
                 <label className="guidance-card file-card">
                   <span>▱</span>
                   <span>
                     <strong>
-                      {draft.evidenceRequired
-                        ? "Upload execution evidence"
-                        : "Evidence is optional"}
+                      Add execution evidence · {evidenceLabel(draft)}
                     </strong>
                     <small>
                       {attachments.length
@@ -4309,7 +4908,6 @@ function ControlDrawer({
                   <b>+</b>
                   <input
                     type="file"
-                    disabled={!draft.evidenceRequired}
                     onChange={(e) => {
                       if (e.target.files?.[0]) {
                         addAttachment(e.target.files[0].name);
@@ -4318,45 +4916,101 @@ function ControlDrawer({
                     }}
                   />
                 </label>
-                {previousEvidence.length > 0 && (
-                  <details className="previous-evidence">
-                    <summary>
-                      Previous-period evidence ({previousEvidence.length})
-                    </summary>
-                    {previousEvidence.slice(0, 8).map((item, index) => (
+                <div className="evidence-link-row">
+                  <label>
+                    SharePoint or evidence link
+                    <input
+                      type="url"
+                      value={evidenceLink}
+                      onChange={(e) => setEvidenceLink(e.target.value)}
+                      placeholder="https://..."
+                    />
+                  </label>
+                  <button
+                    className="secondary-button"
+                    onClick={attachEvidenceLink}
+                  >
+                    Add link
+                  </button>
+                </div>
+                {attachments.length > 0 && (
+                  <div className="current-evidence-list">
+                    <strong>Current-period evidence</strong>
+                    {attachments.map((item, index) =>
+                      /^https?:\/\//i.test(item) ? (
+                        <a
+                          key={`${item}-${index}`}
+                          href={item}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {item}
+                        </a>
+                      ) : (
+                        <span key={`${item}-${index}`}>{item}</span>
+                      ),
+                    )}
+                  </div>
+                )}
+                  </>
+                ) : (
+                  <div className="evidence-permission-note">
+                    <strong>Evidence is restricted to the assigned owner.</strong>
+                    <span>
+                      You can read this control and its DTP from the library,
+                      but only its assigned Control Owner can view or add
+                      period evidence.
+                    </span>
+                  </div>
+                )}
+                <section className="previous-evidence">
+                  <div className="previous-evidence-heading">
+                    <strong>Previous-period evidence</strong>
+                    <small>{previousEvidence.length} retained</small>
+                  </div>
+                  {previousEvidence.length ? (
+                    previousEvidence.slice(0, 8).map((item, index) => (
                       <span key={`${item.period}-${item.file}-${index}`}>
                         <strong>{item.file}</strong>
                         <small>{item.period}</small>
                       </span>
-                    ))}
-                  </details>
-                )}
-                {draft.dtpStatus === "Current" && (
-                  <label className="check-card documentation-check">
-                    <input
-                      type="checkbox"
-                      checked={documentationReviewed}
-                      disabled={!dtpOpened && !control.documentationReviewed}
-                      onChange={(e) => {
-                        setDocumentationReviewed(e.target.checked);
-                        setProgressSaved(false);
-                      }}
-                    />
-                    <span>
-                      <strong>I reviewed the current desktop procedure</strong>
-                      <small>
-                        Open the procedure above before recording this
-                        confirmation.
-                      </small>
-                    </span>
-                  </label>
-                )}
+                    ))
+                  ) : (
+                    <div className="previous-evidence-empty">
+                      No prior-period evidence is available for this control.
+                    </div>
+                  )}
+                </section>
+                <label className="check-card documentation-check">
+                  <input
+                    type="checkbox"
+                    checked={documentationReviewed}
+                    disabled={
+                      !isAssignedOwner ||
+                      draft.dtpStatus !== "Current" ||
+                      (!dtpOpened && !control.documentationReviewed)
+                    }
+                    onChange={(e) => {
+                      setDocumentationReviewed(e.target.checked);
+                      setProgressSaved(false);
+                    }}
+                  />
+                  <span>
+                    <strong>I reviewed the current desktop procedure</strong>
+                    <small>
+                      {draft.dtpStatus !== "Current"
+                        ? "A current DTP must be added before this confirmation is available."
+                        : "Open the current procedure above before recording your confirmation."}
+                    </small>
+                  </span>
+                </label>
                 <div className="execution-confirmation">
                   <span className="section-kicker">Execution confirmation</span>
                   <label className="outcome-field">
                     Execution outcome
                     <select
                       value={executionOutcome}
+                      disabled={!isAssignedOwner}
                       onChange={(e) => {
                         setExecutionOutcome(e.target.value as ExecutionOutcome);
                         setProgressSaved(false);
@@ -4374,6 +5028,7 @@ function ControlDrawer({
                       <textarea
                         rows={4}
                         value={deviationNotes}
+                        disabled={!isAssignedOwner}
                         onChange={(e) => {
                           setDeviationNotes(e.target.value);
                           setProgressSaved(false);
@@ -4383,23 +5038,35 @@ function ControlDrawer({
                     </label>
                   )}
                   <p className="field-note">
-                    Saving progress makes the outcome visible to Controllers.
-                    A deviation also creates an open remediation gap.
+                    Save at any point. Draft confirmations, outcomes and
+                    deviation notes become visible to Controllers without
+                    certifying the control.
                   </p>
                   <button
                     className="secondary-button save-progress"
+                    disabled={!isAssignedOwner}
                     onClick={saveProgress}
                   >
                     {progressSaved
-                      ? "Execution progress saved"
-                      : "Save execution progress"}
+                      ? "Draft saved"
+                      : "Save draft"}
                   </button>
                 </div>
-                <details className="owner-dtp-maintenance">
-                  <summary>Propose a DTP update</summary>
+                {canMaintainDtp ? (
+                <section className="owner-dtp-maintenance">
+                  <div className="owner-dtp-heading">
+                    <div>
+                      <span className="section-kicker">Procedure ownership</span>
+                      <h3>Maintain desktop procedure</h3>
+                    </div>
+                    <span className={`dtp-state ${draft.dtpStatus.toLowerCase().replaceAll(" ", "-")}`}>
+                      {draft.dtpStatus}
+                    </span>
+                  </div>
                   <p>
-                    Control Owners can maintain working guidance. Each saved
-                    replacement preserves the prior file/version in history.
+                    Keep the working steps, owner, version and review dates up
+                    to date. Replacing a file preserves the prior version in
+                    history.
                   </p>
                   <label className="dtp-procedure-field">
                     Procedure steps
@@ -4430,7 +5097,46 @@ function ControlDrawer({
                         }
                       />
                     </label>
+                    <label>
+                      Procedure last reviewed
+                      <input
+                        type="date"
+                        value={draft.dtpLastReviewed}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            dtpLastReviewed: e.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Next review
+                      <input
+                        type="date"
+                        value={draft.dtpNextReview}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            dtpNextReview: e.target.value,
+                          })
+                        }
+                      />
+                    </label>
                   </div>
+                  <label className="dtp-reference-field">
+                    Document or SharePoint reference
+                    <input
+                      value={draft.dtpDocument}
+                      onChange={(e) =>
+                        setDraft({ ...draft, dtpDocument: e.target.value })
+                      }
+                      placeholder="Filename or https://..."
+                    />
+                    <small>
+                      Paste a governed URL or attach a local file below.
+                    </small>
+                  </label>
                   <label className="guidance-card file-card dtp-upload">
                     <span>▤</span>
                     <span>
@@ -4458,12 +5164,20 @@ function ControlDrawer({
                       }}
                     />
                   </label>
-                  <button
-                    className="primary-button owner-dtp-save"
-                    onClick={saveDtp}
-                  >
-                    Save DTP update
-                  </button>
+                  <div className="dtp-actions owner-dtp-actions">
+                    <button
+                      className="secondary-button owner-dtp-save"
+                      onClick={() => saveDtp()}
+                    >
+                      Save procedure draft
+                    </button>
+                    <button
+                      className="primary-button owner-dtp-save"
+                      onClick={confirmDtpCurrent}
+                    >
+                      Confirm procedure current
+                    </button>
+                  </div>
                   {draft.dtpHistory.length > 0 && (
                     <div className="dtp-history">
                       <strong>Version history</strong>
@@ -4474,7 +5188,16 @@ function ControlDrawer({
                       ))}
                     </div>
                   )}
-                </details>
+                </section>
+                ) : (
+                  <div className="dtp-permission-note">
+                    <strong>Read-only procedure access</strong>
+                    <span>
+                      The assigned Control Owner or named procedure owner can
+                      maintain this DTP. All Control Owners can read it.
+                    </span>
+                  </div>
+                )}
               </section>
               <section className="drawer-section">
                 <div>
@@ -4490,119 +5213,113 @@ function ControlDrawer({
                     <strong>{draft.owner}</strong>
                   </span>
                   <button
-                    onClick={() => setShowReassign(!showReassign)}
+                    onClick={() => setRequestModal("guidance")}
                   >
-                    Reassign
+                    Ask for support
                   </button>
                 </div>
-                {showReassign && (
-                  <div className="reassign-form">
-                    <label>
-                      New Control Owner
-                      <select
-                        value={newOwner}
-                        onChange={(e) => setNewOwner(e.target.value)}
-                      >
-                        <option value="">Select prototype owner</option>
-                        <option>{CURRENT_USER}</option>
-                      </select>
-                    </label>
-                    <label className="admin-check">
-                      <input
-                        type="checkbox"
-                        checked={handover}
-                        onChange={(e) => setHandover(e.target.checked)}
-                      />
-                      Handover of responsibilities is complete
-                    </label>
-                    <label className="admin-check">
-                      <input
-                        type="checkbox"
-                        checked={training}
-                        onChange={(e) => setTraining(e.target.checked)}
-                      />
-                      Training and procedure walkthrough are complete
-                    </label>
-                    <button onClick={reassign}>Confirm reassignment</button>
-                  </div>
-                )}
                 {ownershipChanges
                   .filter((change) => change.controlId === control.id)
                   .slice(0, 3)
                   .map((change) => (
                     <small className="field-note" key={change.id}>
+                      {change.status || "Completed"} ·{" "}
                       {new Date(change.changedAt).toLocaleDateString()}:{" "}
                       {change.fromOwner} → {change.toOwner}
                     </small>
                   ))}
               </section>
+              <section className="drawer-section certification-readiness">
+                <div>
+                  <span className="section-kicker">Certification readiness</span>
+                  <h3>
+                    {certificationBlockers.length
+                      ? `${certificationBlockers.length} item${certificationBlockers.length === 1 ? "" : "s"} to complete`
+                      : "Ready to certify"}
+                  </h3>
+                </div>
+                {certificationBlockers.length ? (
+                  <ul>
+                    {certificationBlockers.map((blocker) => (
+                      <li key={blocker}>{blocker}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>
+                    Ownership, execution, procedure and evidence checks are
+                    complete for this period.
+                  </p>
+                )}
+              </section>
             </>
           )}
         </div>
-        <div className="drawer-footer">
-          {role === "Controller Admin" && (
-            <button
-              className="secondary-button"
-              onClick={() => setRequestModal("gap")}
-            >
-              Log a gap
-            </button>
-          )}
-          <button
-            className="secondary-button"
-            onClick={() => setRequestModal("guidance")}
-          >
-            Ask for guidance
-          </button>
+        <div
+          className={`drawer-footer ${
+            role === "Control Owner" ? "owner-footer" : "admin-footer"
+          }`}
+        >
           {role === "Control Owner" ? (
-            <button
-              className="primary-button"
-              disabled={
-                !acknowledgementSaved ||
-                !progressSaved ||
-                !(
-                  executionOutcome === "Performed as documented" ||
-                  executionOutcome === "Performed with deviations"
-                ) ||
-                (executionOutcome === "Performed with deviations" &&
-                  !deviationNotes.trim()) ||
-                (draft.dtpStatus === "Current" && !documentationReviewed) ||
-                (draft.evidenceRequired && attachments.length === 0)
-              }
-              onClick={() => {
-                updateControl(draft.id, {
-                  status: "Certified",
-                  due: "Complete",
-                  accepted,
-                  understood,
-                  acknowledgedAt,
-                  performed: true,
-                  executionOutcome,
-                  deviationNotes: deviationNotes.trim(),
-                  documentationReviewed,
-                  documentationReviewedAt: documentationReviewed
-                    ? new Date().toISOString()
-                    : undefined,
-                  certifiedAt: new Date().toISOString(),
-                });
-                appendAudit(
-                  draft.id,
-                  "Control certified",
-                  "Saved ownership acknowledgement, execution and evidence requirements confirmed",
-                );
-                notify(`${controlCode(draft)} certified`);
-                close();
-              }}
-            >
-              Certify control
-            </button>
+            <>
+              <button
+                className="secondary-button"
+                onClick={() => setRequestModal("guidance")}
+              >
+                Ask for guidance
+              </button>
+              <button
+                className="secondary-button"
+                disabled={!isAssignedOwner}
+                onClick={saveProgress}
+              >
+                Save draft
+              </button>
+              <button
+                className="primary-button"
+                disabled={certificationBlockers.length > 0}
+                onClick={() => {
+                  updateControl(draft.id, {
+                    status: "Certified",
+                    due: "Complete",
+                    accepted,
+                    understood,
+                    acknowledgedAt,
+                    performed: true,
+                    executionOutcome,
+                    deviationNotes: deviationNotes.trim(),
+                    documentationReviewed,
+                    documentationReviewedAt: documentationReviewed
+                      ? control.documentationReviewedAt || new Date().toISOString()
+                      : undefined,
+                    certifiedAt: new Date().toISOString(),
+                  });
+                  appendAudit(
+                    draft.id,
+                    "Control certified",
+                    "Saved ownership acknowledgement, execution and evidence requirements confirmed",
+                  );
+                  notify(`${controlCode(draft)} certified`);
+                  close();
+                }}
+              >
+                Certify control
+              </button>
+            </>
           ) : (
-            <button
-              className="primary-button"
-              onClick={() => changeRole("Control Owner")}
-            >
-              Preview Control Owner view
-            </button>
+            <>
+              <button
+                className="secondary-button"
+                onClick={() => setRequestModal("gap")}
+              >
+                Log a gap
+              </button>
+              <button
+                className="secondary-button"
+                onClick={() => setRequestModal("guidance")}
+              >
+                Ask for guidance
+              </button>
+            </>
           )}
         </div>
       </aside>
@@ -4808,6 +5525,84 @@ function ControlDrawer({
           </section>
         </>
       )}
+      {showDtpPreview && (
+        <>
+          <button
+            className="request-dialog-scrim"
+            aria-label="Close desktop procedure"
+            onClick={() => setShowDtpPreview(false)}
+          />
+          <section
+            className="request-dialog dtp-preview-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dtp-preview-title"
+          >
+            <header>
+              <div>
+                <span className="section-kicker">Current desktop procedure</span>
+                <h2 id="dtp-preview-title">{draft.name}</h2>
+                <p>
+                  {controlCode(draft)} · Version {draft.dtpVersion || "Not recorded"}
+                </p>
+              </div>
+              <button
+                aria-label="Close desktop procedure"
+                onClick={() => setShowDtpPreview(false)}
+              >
+                ×
+              </button>
+            </header>
+            <div className="dtp-preview-body">
+              <div className="dtp-preview-meta">
+                <span>
+                  <small>Procedure owner</small>
+                  <strong>{draft.dtpOwner || "Unassigned"}</strong>
+                </span>
+                <span>
+                  <small>Procedure last reviewed</small>
+                  <strong>{draft.dtpLastReviewed || "Not recorded"}</strong>
+                </span>
+                <span>
+                  <small>Next review</small>
+                  <strong>{draft.dtpNextReview || "Not scheduled"}</strong>
+                </span>
+              </div>
+              <article className="dtp-preview-steps">
+                <span className="section-kicker">Working steps</span>
+                <p>
+                  {draft.dtpSummary ||
+                    "The current procedure is held in the attached source document."}
+                </p>
+              </article>
+              <div className="dtp-preview-source">
+                <span>▤</span>
+                <div>
+                  <strong>{draft.dtpDocument || "Inline procedure"}</strong>
+                  <small>
+                    {/^https?:\/\//i.test(draft.dtpDocument)
+                      ? "Open the governed source in a new tab."
+                      : "Source reference retained with this control."}
+                  </small>
+                </div>
+                {/^https?:\/\//i.test(draft.dtpDocument) && (
+                  <a href={draft.dtpDocument} target="_blank" rel="noreferrer">
+                    Open source
+                  </a>
+                )}
+              </div>
+              <footer>
+                <button
+                  className="primary-button"
+                  onClick={() => setShowDtpPreview(false)}
+                >
+                  Close & return to control
+                </button>
+              </footer>
+            </div>
+          </section>
+        </>
+      )}
     </>
   );
 }
@@ -4888,9 +5683,7 @@ function ControlTable({
                 {showRules && (
                   <td>
                     <strong className="cell-main">
-                      {control.evidenceRequired
-                        ? "Required"
-                        : "Certification only"}
+                      {evidenceLabel(control)}
                     </strong>
                     <small className="cell-sub">DTP: {control.dtpStatus}</small>
                   </td>
