@@ -77,6 +77,8 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /No prior-period evidence is available/);
   assert.match(page, /SharePoint or evidence link/);
   assert.match(page, /Evidence is restricted to the assigned owner/);
+  assert.match(page, /Guidance is shared; evidence stays restricted/);
+  assert.match(page, /governed GCP object storage/);
   assert.match(page, /Desktop procedure/);
   assert.match(page, /Simulated reminder/);
   assert.match(page, /MVP behavior: no email is sent/);
@@ -89,12 +91,18 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /Evidence Needed \(Y\/N\)/);
   assert.match(page, /Attestation Frequency/);
   assert.match(page, /Control Pillar/);
-  assert.match(page, /Apply validated import/);
+  assert.match(page, /Apply validated changes/);
+  assert.match(page, /Cancel import/);
+  assert.match(page, /Matching key: Control # \+ Region \+ Country \+ Unit/);
+  assert.match(page, /existing controls untouched/);
+  assert.match(page, /execution records, DTPs, evidence and audit history are not\s+deleted or replaced/);
   assert.match(page, /Recent ownership activity/);
   assert.match(page, /Request reassignment/);
   assert.match(page, /responsibility handover/);
   assert.match(page, /Gap remediation/);
   assert.match(page, /Controller closure approval/);
+  assert.match(page, /Controller correction saved/);
+  assert.match(page, /Owner execution, evidence, certification and history retained/);
   assert.match(page, /Procedure steps/);
   assert.match(page, /Control Owner-managed DTP/);
   assert.match(page, /Save procedure draft/);

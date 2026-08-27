@@ -1221,8 +1221,8 @@ function OverlayPanel({
                 <span>Controller Admin</span>
                 <strong>Configure → assign → monitor → report</strong>
                 <p>
-                  Sets scope, ownership, evidence rules, due dates, DTP guidance
-                  and reminder schedules.
+                  Sets scope, ownership, evidence rules, due dates and reminder
+                  schedules while monitoring owner-managed DTP status.
                 </p>
               </article>
               <article>
@@ -1231,6 +1231,28 @@ function OverlayPanel({
                 <p>
                   Saves acknowledgement separately, can save partial drafts,
                   follows the DTP and adds evidence where required.
+                </p>
+              </article>
+            </div>
+            <div className="help-guardrails">
+              <article>
+                <span>Access guardrails</span>
+                <strong>Guidance is shared; evidence stays restricted</strong>
+                <p>
+                  Control Owners can read DTPs across the library, but only the
+                  assigned owner can access current and prior-period evidence.
+                  Controller Admins can review all DTPs and evidence.
+                </p>
+              </article>
+              <article>
+                <span>Prototype storage</span>
+                <strong>References now; governed storage in production</strong>
+                <p>
+                  Local uploads retain filename metadata only. Use approved
+                  SharePoint or evidence links for retrieval. The enterprise
+                  target separates files into governed GCP object storage and
+                  keeps metadata in Firestore, subject to approved retention
+                  and file-size rules.
                 </p>
               </article>
             </div>
@@ -3007,6 +3029,11 @@ function AdminSetup({
   const [importPreview, setImportPreview] = useState<{
     rows: Record<string, string>[];
     errors: string[];
+    summary: {
+      newInstances: number;
+      matchedUpdates: number;
+      untouchedControls: number;
+    };
   } | null>(null);
   const [newControl, setNewControl] = useState({
     id: "",
@@ -3185,11 +3212,29 @@ function AdminSetup({
           `Row ${index + 2}: new controls require name, sub-process and frequency`,
         );
     });
-    setImportPreview({
-      rows: rows.map((cells) =>
-        Object.fromEntries(headers.map((header, index) => [header, cells[index]])),
+    const parsedRows = rows.map((cells) =>
+      Object.fromEntries(headers.map((header, index) => [header, cells[index]])),
+    );
+    const matchedUpdates = parsedRows.filter((row) =>
+      controls.some(
+        (control) =>
+          control.id ===
+          makeInstanceId(
+            row["Control #"],
+            row["Region"],
+            row["Country"],
+            row["Unit"],
+          ),
       ),
+    ).length;
+    setImportPreview({
+      rows: parsedRows,
       errors,
+      summary: {
+        newInstances: parsedRows.length - matchedUpdates,
+        matchedUpdates,
+        untouchedControls: Math.max(0, controls.length - matchedUpdates),
+      },
     });
     if (errors.length) {
       notify(`Excel checked · ${errors.length} issues to resolve`);
@@ -3549,16 +3594,44 @@ function AdminSetup({
                     ? `${importPreview.errors.length} issues`
                     : "ready to apply"}
                 </strong>
+                <div className="import-change-summary">
+                  <span>
+                    <strong>{importPreview.summary.newInstances}</strong>
+                    <small>new instances</small>
+                  </span>
+                  <span>
+                    <strong>{importPreview.summary.matchedUpdates}</strong>
+                    <small>matched updates</small>
+                  </span>
+                  <span>
+                    <strong>{importPreview.summary.untouchedControls}</strong>
+                    <small>existing controls untouched</small>
+                  </span>
+                </div>
+                <p className="import-guardrail-note">
+                  Matching key: Control # + Region + Country + Unit. Blank
+                  fields retain their existing value; omitted controls,
+                  execution records, DTPs, evidence and audit history are not
+                  deleted or replaced.
+                </p>
                 {importPreview.errors.map((error) => (
                   <small key={error}>{error}</small>
                 ))}
-                <button
-                  className="primary-small"
-                  disabled={Boolean(importPreview.errors.length)}
-                  onClick={applyImport}
-                >
-                  Apply validated import
-                </button>
+                <div className="import-preview-actions">
+                  <button
+                    className="secondary-small"
+                    onClick={() => setImportPreview(null)}
+                  >
+                    Cancel import
+                  </button>
+                  <button
+                    className="primary-small"
+                    disabled={Boolean(importPreview.errors.length)}
+                    onClick={applyImport}
+                  >
+                    Apply validated changes
+                  </button>
+                </div>
               </div>
             )}
           </article>
@@ -3931,6 +4004,28 @@ function ControlDrawer({
   });
   const saveAdmin = () => {
     const assignmentChanged = draft.owner !== control.owner;
+    const changedFields = (
+      [
+        ["Control name", "name"],
+        ["Business process", "businessProcess"],
+        ["Sub-process", "process"],
+        ["Control frequency", "frequency"],
+        ["Attestation frequency", "attestationFrequency"],
+        ["Control Owner", "owner"],
+        ["Unit / site", "site"],
+        ["Due date", "due"],
+        ["Evidence requirement", "evidenceRequirement"],
+        ["Lifecycle", "lifecycle"],
+        ["Execution instructions", "instructions"],
+        ["Control objective", "objective"],
+        ["Risk description", "riskDescription"],
+        ["Control description", "description"],
+        ["Key control", "keyControl"],
+        ["Fraud control", "fraudControl"],
+      ] as const
+    )
+      .filter(([, field]) => draft[field] !== control[field])
+      .map(([label]) => label);
     const status: ControlStatus =
       draft.owner === "Unassigned"
         ? "Unassigned"
@@ -3954,10 +4049,14 @@ function ControlDrawer({
     }
     appendAudit(
       control.id,
-      "Control requirements updated",
-      "Ownership, execution rules or guidance changed",
+      "Controller correction saved",
+      changedFields.length
+        ? `Updated: ${changedFields.join(", ")}. Owner execution, evidence, certification and history retained.`
+        : "No requirement fields changed; owner execution, evidence, certification and history retained.",
     );
-    notify(`${controlCode(control)} requirements saved`);
+    notify(
+      `${controlCode(control)} ${changedFields.length ? `${changedFields.length} field${changedFields.length === 1 ? "" : "s"} corrected` : "reviewed with no changes"}`,
+    );
   };
   const reassign = () => {
     if (draft.owner !== CURRENT_USER) {
@@ -4674,6 +4773,17 @@ function ControlDrawer({
                     />
                   </label>
                 </details>
+                <div className="controller-correction-note">
+                  <span>✓</span>
+                  <div>
+                    <strong>Safe correction</strong>
+                    <small>
+                      Saving changes only updates this control instance&apos;s
+                      requirement and assignment metadata. Owner execution,
+                      evidence, certification and audit history are retained.
+                    </small>
+                  </div>
+                </div>
                 <button onClick={saveAdmin}>Save control requirements</button>
               </section>
               <section className="drawer-section controller-dtp-readout">
