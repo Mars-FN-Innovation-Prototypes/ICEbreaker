@@ -42,6 +42,8 @@ type Nav =
 type Overlay = "help" | "notifications" | "profile" | null;
 type Audience = "Leadership" | "Site owners" | "Controllers";
 type ScopeConfig = { regions: string[]; countries: string[]; sites: string[] };
+type PageSize = 10 | 25 | 50 | "All";
+type OwnerTask = "ownership" | "procedure" | "support";
 type SavedView = {
   name: string;
   businessProcess?: string;
@@ -59,6 +61,7 @@ type SavedView = {
   keyControl?: string;
   frequency?: string;
   attestationFrequency?: string;
+  dtpStatus?: string;
 };
 
 const CURRENT_USER = "Demo Account";
@@ -369,6 +372,7 @@ export default function IcebreakerApp() {
   const [attestationFilter, setAttestationFilter] = useState(
     "All attestation frequencies",
   );
+  const [dtpFilter, setDtpFilter] = useState("All DTP statuses");
   const [scopeConfig, setScopeConfig] = useState<ScopeConfig>(DEFAULT_SCOPE);
   const [audience, setAudience] = useState<Audience>("Leadership");
   const [savedViews, setSavedViews] = useState<SavedView[]>(DEFAULT_VIEWS);
@@ -579,21 +583,27 @@ export default function IcebreakerApp() {
     );
   }, [scopeConfig, hydrated]);
 
-  const mine = useMemo(
-    () =>
-      controls.filter(
-        (control) =>
-          control.owner === CURRENT_USER && control.lifecycle === "Active",
-      ),
-    [controls],
-  );
-  const filtered = useMemo(
+  const searchedControls = useMemo(
     () =>
       controls.filter((control) => {
         const haystack =
           `${controlCode(control)} ${control.name} ${control.businessProcess} ${control.process} ${control.owner} ${control.country} ${control.unit} ${control.pillar}`.toLowerCase();
+        return haystack.includes(query.toLowerCase());
+      }),
+    [controls, query],
+  );
+  const mine = useMemo(
+    () =>
+      searchedControls.filter(
+        (control) =>
+          control.owner === CURRENT_USER && control.lifecycle === "Active",
+      ),
+    [searchedControls],
+  );
+  const filtered = useMemo(
+    () =>
+      searchedControls.filter((control) => {
         return (
-          haystack.includes(query.toLowerCase()) &&
           (pillarFilter === "All control pillars" ||
             control.pillar === pillarFilter) &&
           (processFilter === "All processes" ||
@@ -627,6 +637,8 @@ export default function IcebreakerApp() {
             control.frequency === frequencyFilter) &&
           (attestationFilter === "All attestation frequencies" ||
             control.attestationFrequency === attestationFilter) &&
+          (dtpFilter === "All DTP statuses" ||
+            control.dtpStatus === dtpFilter) &&
           (evidenceFilter === "All evidence rules" ||
             (evidenceFilter === "Evidence required"
               ? control.evidenceRequirement === "Required"
@@ -636,8 +648,7 @@ export default function IcebreakerApp() {
         );
       }),
     [
-      controls,
-      query,
+      searchedControls,
       pillarFilter,
       processFilter,
       businessProcessFilter,
@@ -653,6 +664,7 @@ export default function IcebreakerApp() {
       keyFilter,
       frequencyFilter,
       attestationFilter,
+      dtpFilter,
     ],
   );
 
@@ -782,6 +794,7 @@ export default function IcebreakerApp() {
         "Reassignment requested",
         "Documentation reviewed",
         "Owner DTP review confirmed at",
+        "DTP status",
         "Execution outcome",
         "Deviation notes",
         "Evidence files",
@@ -817,6 +830,7 @@ export default function IcebreakerApp() {
         c.reassignmentRequested ? "Yes" : "No",
         c.documentationReviewed ? "Yes" : "No",
         c.documentationReviewedAt || "",
+        c.dtpStatus,
         c.executionOutcome || "Not recorded",
         c.deviationNotes || "",
         (attachments[executionKey(period, c.id)] || []).join("; "),
@@ -968,7 +982,7 @@ export default function IcebreakerApp() {
           </section>
           {activeNav === "Control tower" && (
             <ControlTower
-              controls={controls.filter(
+              controls={searchedControls.filter(
                 (control) => control.lifecycle === "Active",
               )}
               openControl={setSelected}
@@ -1029,6 +1043,8 @@ export default function IcebreakerApp() {
               setFrequencyFilter={setFrequencyFilter}
               attestationFilter={attestationFilter}
               setAttestationFilter={setAttestationFilter}
+              dtpFilter={dtpFilter}
+              setDtpFilter={setDtpFilter}
               scopeConfig={scopeConfig}
               audience={audience}
               setAudience={setAudience}
@@ -1609,7 +1625,7 @@ function ControlTower({
         </article>
       </section>
       <ControlTable
-        controls={visibleControls.slice(0, 8)}
+        controls={visibleControls}
         title={`${towerPillar.replace(" Controls", "")} controls ready for review`}
         openControl={openControl}
         onExport={() => setActiveNav("Reports")}
@@ -1952,6 +1968,8 @@ function Reports({
   setFrequencyFilter,
   attestationFilter,
   setAttestationFilter,
+  dtpFilter,
+  setDtpFilter,
   scopeConfig,
   audience,
   setAudience,
@@ -1993,6 +2011,8 @@ function Reports({
   setFrequencyFilter: (v: string) => void;
   attestationFilter: string;
   setAttestationFilter: (v: string) => void;
+  dtpFilter: string;
+  setDtpFilter: (v: string) => void;
   scopeConfig: ScopeConfig;
   audience: Audience;
   setAudience: (v: Audience) => void;
@@ -2046,6 +2066,7 @@ function Reports({
         keyControl: keyFilter,
         frequency: frequencyFilter,
         attestationFrequency: attestationFilter,
+        dtpStatus: dtpFilter,
       },
     ]);
     notify(`Saved “${name}”`);
@@ -2069,6 +2090,7 @@ function Reports({
     setAttestationFilter(
       view.attestationFrequency || "All attestation frequencies",
     );
+    setDtpFilter(view.dtpStatus || "All DTP statuses");
     setAudience(view.audience);
     notify(`Loaded “${view.name}”`);
   };
@@ -2087,6 +2109,7 @@ function Reports({
     setKeyFilter("All controls");
     setFrequencyFilter("All frequencies");
     setAttestationFilter("All attestation frequencies");
+    setDtpFilter("All DTP statuses");
     notify("All report filters cleared");
   };
   return (
@@ -2307,6 +2330,18 @@ function Reports({
                 ))}
               </select>
             </label>
+            <label>
+              DTP status
+              <select
+                value={dtpFilter}
+                onChange={(e) => setDtpFilter(e.target.value)}
+              >
+                <option value="All DTP statuses">All DTP statuses</option>
+                <option value="Current">Current / confirmed</option>
+                <option value="Needs review">Submitted / needs review</option>
+                <option value="Not added">Missing / not added</option>
+              </select>
+            </label>
           </div>
           <div className="report-result">
             <div>
@@ -2415,7 +2450,7 @@ function Reports({
         </div>
       )}
       <ControlTable
-        controls={controls.slice(0, 10)}
+        controls={controls}
         title="Report preview"
         openControl={openControl}
         onExport={downloadReport}
@@ -2965,6 +3000,10 @@ function AdminSetup({
   const [country, setCountry] = useState("");
   const [site, setSite] = useState("");
   const [reminderLog, setReminderLog] = useState("");
+  const [reminderSender, setReminderSender] = useState(CURRENT_USER);
+  const [requirementPage, setRequirementPage] = useState(1);
+  const [requirementPageSize, setRequirementPageSize] =
+    useState<PageSize>(25);
   const [importPreview, setImportPreview] = useState<{
     rows: Record<string, string>[];
     errors: string[];
@@ -2974,6 +3013,21 @@ function AdminSetup({
     name: "",
     process: "Manufacturing",
   });
+  const requirementTotalPages =
+    requirementPageSize === "All"
+      ? 1
+      : Math.max(1, Math.ceil(controls.length / requirementPageSize));
+  const safeRequirementPage = Math.min(
+    requirementPage,
+    requirementTotalPages,
+  );
+  const visibleRequirementControls =
+    requirementPageSize === "All"
+      ? controls
+      : controls.slice(
+          (safeRequirementPage - 1) * requirementPageSize,
+          safeRequirementPage * requirementPageSize,
+        );
   const addScope = (
     kind: keyof ScopeConfig,
     value: string,
@@ -3574,7 +3628,7 @@ function AdminSetup({
                 />
               </label>
             </div>
-            {controls.slice(0, 10).map((control) => (
+            {visibleRequirementControls.map((control) => (
               <div className="requirement-row" key={control.id}>
                 <button onClick={() => openControl(control)}>
                   <span>{control.id}</span>
@@ -3633,6 +3687,16 @@ function AdminSetup({
                 </span>
               </div>
             ))}
+            <PaginationBar
+              total={controls.length}
+              page={safeRequirementPage}
+              pageSize={requirementPageSize}
+              onPageChange={setRequirementPage}
+              onPageSizeChange={(nextPageSize) => {
+                setRequirementPageSize(nextPageSize);
+                setRequirementPage(1);
+              }}
+            />
           </article>
         </>
       )}
@@ -3711,6 +3775,18 @@ function AdminSetup({
               </div>
               <span className="draft-badge">MVP workflow</span>
             </div>
+            <label className="reminder-sender">
+              Reminder sender
+              <select
+                value={reminderSender}
+                onChange={(event) => setReminderSender(event.target.value)}
+              >
+                <option value={CURRENT_USER}>{CURRENT_USER} · Controller</option>
+              </select>
+              <small>
+                Enterprise delivery will use the signed-in Controller identity.
+              </small>
+            </label>
             {[
               ["7 days before", "Friendly heads-up"],
               ["3 days before", "Action reminder"],
@@ -3732,7 +3808,7 @@ function AdminSetup({
             <button
               className="wide-secondary"
               onClick={() => {
-                const entry = `Simulated reminder preview generated at ${new Date().toLocaleTimeString()}`;
+                const entry = `Simulated reminder from ${reminderSender} generated at ${new Date().toLocaleTimeString()}`;
                 setReminderLog(entry);
                 notify(entry);
               }}
@@ -3745,6 +3821,7 @@ function AdminSetup({
               <span>M</span>
               <div>
                 <strong>ICEbreaker reminder</strong>
+                <small>From: {reminderSender} via ICEbreaker</small>
                 <small>To: Assigned Control Owner</small>
               </div>
             </div>
@@ -3764,8 +3841,8 @@ function AdminSetup({
               <strong>MVP behavior: no email is sent.</strong>
               <small>
                 This public build creates an on-screen preview only. The
-                enterprise target uses Microsoft SSO identity and governed
-                delivery through Microsoft Graph after GCP deployment.
+                enterprise target sends on behalf of the signed-in Controller
+                through Microsoft Graph after identity and delivery approval.
               </small>
             </div>
           </article>
@@ -3830,6 +3907,7 @@ function ControlDrawer({
     Boolean(control.draftSavedAt),
   );
   const [draft, setDraft] = useState(control);
+  const [ownerTask, setOwnerTask] = useState<OwnerTask>("ownership");
   const [showReassign, setShowReassign] = useState(false);
   const [newOwner, setNewOwner] = useState("");
   const [handover, setHandover] = useState(false);
@@ -4003,7 +4081,10 @@ function ControlDrawer({
     setEvidenceLink("");
     notify("Evidence link added");
   };
-  const saveDtp = (nextDraft: InventoryControl = draft) => {
+  const saveDtp = (
+    nextDraft: InventoryControl = draft,
+    confirmCurrent = false,
+  ) => {
     if (
       role !== "Controller Admin" &&
       draft.owner !== CURRENT_USER &&
@@ -4027,6 +4108,14 @@ function ControlDrawer({
           ...control.dtpHistory,
         ]
       : control.dtpHistory;
+    const hasProcedure = Boolean(
+      nextDraft.dtpSummary.trim() || nextDraft.dtpDocument,
+    );
+    const dtpStatus: InventoryControl["dtpStatus"] = confirmCurrent
+      ? "Current"
+      : hasProcedure
+        ? "Needs review"
+        : "Not added";
     updateControl(control.id, {
       dtpSummary: nextDraft.dtpSummary,
       dtpOwner: nextDraft.dtpOwner,
@@ -4034,7 +4123,7 @@ function ControlDrawer({
       dtpLastReviewed: nextDraft.dtpLastReviewed,
       dtpNextReview: nextDraft.dtpNextReview,
       dtpDocument: nextDraft.dtpDocument,
-      dtpStatus: nextDraft.dtpStatus,
+      dtpStatus,
       dtpHistory,
       documentationReviewed: false,
       documentationReviewedAt: undefined,
@@ -4044,7 +4133,7 @@ function ControlDrawer({
       "DTP guidance updated",
       `${nextDraft.dtpDocument || "Inline procedure"} · ${nextDraft.dtpVersion || "No version"}`,
     );
-    setDraft({ ...nextDraft, dtpHistory });
+    setDraft({ ...nextDraft, dtpStatus, dtpHistory });
     setDocumentationReviewed(false);
     setDtpOpened(false);
     setProgressSaved(false);
@@ -4062,7 +4151,7 @@ function ControlDrawer({
       dtpOwner:
         draft.dtpOwner === "Unassigned" ? CURRENT_USER : draft.dtpOwner,
     };
-    saveDtp(nextDraft);
+    saveDtp(nextDraft, true);
     appendAudit(
       control.id,
       "DTP confirmed current",
@@ -4235,6 +4324,35 @@ function ControlDrawer({
                 </p>
               </div>
             </div>
+          )}
+          {role === "Control Owner" && (
+            <nav className="owner-task-tabs" aria-label="Control Owner tasks">
+              {(
+                [
+                  ["ownership", "1", "Ownership", acknowledgementSaved ? "Saved" : "Action needed"],
+                  ["procedure", "2", "Procedure & execution", draft.dtpStatus],
+                  [
+                    "support",
+                    "3",
+                    "Support & certify",
+                    certificationBlockers.length
+                      ? `${certificationBlockers.length} remaining`
+                      : "Ready",
+                  ],
+                ] as const
+              ).map(([task, step, label, detail]) => (
+                <button
+                  type="button"
+                  className={ownerTask === task ? "active" : ""}
+                  key={task}
+                  onClick={() => setOwnerTask(task)}
+                >
+                  <span>{step}</span>
+                  <strong>{label}</strong>
+                  <small>{detail}</small>
+                </button>
+              ))}
+            </nav>
           )}
           {role === "Controller Admin" ? (
             <>
@@ -4558,134 +4676,33 @@ function ControlDrawer({
                 </details>
                 <button onClick={saveAdmin}>Save control requirements</button>
               </section>
-              <section className="drawer-section dtp-editor">
-                <div className="dtp-heading">
-                  <span className="section-kicker">Desktop procedure</span>
-                  <h3>DTP guidance · Controller override</h3>
-                  <p>
-                    Capture the working steps here and attach the detailed
-                    procedure when one exists. Control Owners see both in their
-                    review experience.
-                  </p>
-                </div>
-                <label className="dtp-procedure-field">
-                  <span>Procedure steps</span>
-                  <textarea
-                    value={draft.dtpSummary}
-                    rows={7}
-                    placeholder={
-                      "1. Run the inventory report for the review period.\n2. Compare exceptions to the documented threshold.\n3. Investigate variances and retain the final approved report."
-                    }
-                    onChange={(e) =>
-                      setDraft({ ...draft, dtpSummary: e.target.value })
-                    }
-                  />
-                  <small>
-                    Add enough detail for a new owner to understand the
-                    sequence. Use numbered steps, checks and escalation points.
-                  </small>
-                </label>
-                <div className="dtp-meta-grid">
-                  <label>
-                    Version
-                    <input
-                      value={draft.dtpVersion}
-                      onChange={(e) =>
-                        setDraft({ ...draft, dtpVersion: e.target.value })
-                      }
-                      placeholder="e.g. 1.0"
-                    />
-                  </label>
-                  <label>
-                    Procedure owner
-                    <input
-                      value={draft.dtpOwner}
-                      onChange={(e) =>
-                        setDraft({ ...draft, dtpOwner: e.target.value })
-                      }
-                    />
-                  </label>
-                  <label>
-                    Procedure last reviewed
-                    <input
-                      type="date"
-                      value={draft.dtpLastReviewed}
-                      onChange={(e) =>
-                        setDraft({
-                          ...draft,
-                          dtpLastReviewed: e.target.value,
-                        })
-                      }
-                    />
-                  </label>
-                  <label>
-                    Next review
-                    <input
-                      type="date"
-                      value={draft.dtpNextReview}
-                      onChange={(e) =>
-                        setDraft({
-                          ...draft,
-                          dtpNextReview: e.target.value,
-                        })
-                      }
-                    />
-                  </label>
-                </div>
-                <label className="dtp-reference-field">
-                  Document or SharePoint reference
-                  <input
-                    value={draft.dtpDocument}
-                    onChange={(e) =>
-                      setDraft({ ...draft, dtpDocument: e.target.value })
-                    }
-                    placeholder="Filename or https://..."
-                  />
-                  <small>
-                    A governed URL opens directly; uploaded files retain their
-                    filename in this browser prototype.
-                  </small>
-                </label>
-                <label className="guidance-card file-card dtp-upload">
-                  <span>▤</span>
-                  <span>
-                    <strong>
-                      {draft.dtpStatus === "Not added"
-                        ? "Add a desktop procedure"
-                        : draft.dtpDocument || `${draft.process} desktop procedure`}
-                    </strong>
-                    <small>
-                      {draft.dtpStatus} · Upload or replace local guidance
-                    </small>
+              <section className="drawer-section controller-dtp-readout">
+                <div className="controller-readout-heading">
+                  <div>
+                    <span className="section-kicker">Desktop procedure</span>
+                    <h3>Control Owner-managed DTP</h3>
+                  </div>
+                  <span className={`dtp-state ${draft.dtpStatus.toLowerCase().replaceAll(" ", "-")}`}>
+                    {draft.dtpStatus}
                   </span>
-                  <b>+</b>
-                  <input
-                    type="file"
-                    onChange={(e) => {
-                      if (e.target.files?.[0]) {
-                        setDraft({
-                          ...draft,
-                          dtpStatus: "Current",
-                          dtpDocument: e.target.files[0].name,
-                        });
-                        notify(`${e.target.files[0].name} attached`);
-                      }
-                    }}
-                  />
-                </label>
-                <div className="dtp-actions">
-                  <button
-                    className="primary-button"
-                    onClick={() => saveDtp()}
-                  >
-                    Save DTP guidance
-                  </button>
-                  <button
-                    className="secondary-button"
-                    onClick={confirmDtpCurrent}
-                  >
-                    Confirm current
-                  </button>
+                </div>
+                <p>
+                  The assigned Control Owner maintains and confirms the desktop
+                  procedure. Controllers monitor status here and in Reports.
+                </p>
+                <div className="procedure-review-meta">
+                  <span>
+                    <small>Procedure owner</small>
+                    <strong>{draft.dtpOwner || "Unassigned"}</strong>
+                  </span>
+                  <span>
+                    <small>Version</small>
+                    <strong>{draft.dtpVersion || "Not recorded"}</strong>
+                  </span>
+                  <span>
+                    <small>Next review</small>
+                    <strong>{draft.dtpNextReview || "Not scheduled"}</strong>
+                  </span>
                 </div>
               </section>
             </>
@@ -4704,7 +4721,8 @@ function ControlDrawer({
                   </div>
                 </div>
               )}
-              <section className="drawer-section">
+              {ownerTask === "ownership" && (
+              <section className="drawer-section owner-task-panel">
                 <div>
                   <span className="section-kicker">Required confirmations</span>
                   <h3>Control Owner acknowledgement</h3>
@@ -4829,8 +4847,10 @@ function ControlDrawer({
                   </div>
                 )}
               </section>
-              <section className="drawer-section">
-                <div>
+              )}
+              {ownerTask === "procedure" && (
+              <section className="drawer-section owner-task-panel owner-procedure-tab">
+                <div className="procedure-section-heading">
                   <span className="section-kicker">Documentation</span>
                   <h3>Procedure & evidence</h3>
                 </div>
@@ -5155,7 +5175,7 @@ function ControlDrawer({
                           setDraft({
                             ...draft,
                             dtpDocument: e.target.files[0].name,
-                            dtpStatus: "Current",
+                            dtpStatus: "Needs review",
                             dtpOwner:
                               draft.dtpOwner === "Unassigned"
                                 ? CURRENT_USER
@@ -5199,7 +5219,10 @@ function ControlDrawer({
                   </div>
                 )}
               </section>
-              <section className="drawer-section">
+              )}
+              {ownerTask === "support" && (
+              <>
+              <section className="drawer-section owner-task-panel">
                 <div>
                   <span className="section-kicker">Ownership</span>
                   <h3>People & support</h3>
@@ -5251,6 +5274,8 @@ function ControlDrawer({
                   </p>
                 )}
               </section>
+              </>
+              )}
             </>
           )}
         </div>
@@ -5607,6 +5632,74 @@ function ControlDrawer({
   );
 }
 
+function PaginationBar({
+  total,
+  page,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  total: number;
+  page: number;
+  pageSize: PageSize;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: PageSize) => void;
+}) {
+  const totalPages =
+    pageSize === "All" ? 1 : Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const start = total === 0 ? 0 : pageSize === "All" ? 1 : (safePage - 1) * pageSize + 1;
+  const end =
+    total === 0
+      ? 0
+      : pageSize === "All"
+        ? total
+        : Math.min(total, safePage * pageSize);
+  return (
+    <div className="pagination-bar" aria-label="Control list pagination">
+      <span>
+        Showing {start}-{end} of {total} controls
+      </span>
+      <label>
+        Rows
+        <select
+          value={pageSize}
+          onChange={(event) => {
+            const value = event.target.value;
+            onPageSizeChange(
+              value === "All" ? "All" : (Number(value) as PageSize),
+            );
+          }}
+        >
+          <option value={10}>10</option>
+          <option value={25}>25</option>
+          <option value={50}>50</option>
+          <option value="All">All</option>
+        </select>
+      </label>
+      <div className="pagination-actions">
+        <button
+          aria-label="Previous controls page"
+          disabled={safePage <= 1}
+          onClick={() => onPageChange(Math.max(1, safePage - 1))}
+        >
+          ‹
+        </button>
+        <strong>
+          Page {safePage} of {totalPages}
+        </strong>
+        <button
+          aria-label="Next controls page"
+          disabled={safePage >= totalPages}
+          onClick={() => onPageChange(Math.min(totalPages, safePage + 1))}
+        >
+          ›
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ControlTable({
   controls,
   title,
@@ -5620,6 +5713,15 @@ function ControlTable({
   showRules?: boolean;
   onExport: () => void;
 }) {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<PageSize>(25);
+  const totalPages =
+    pageSize === "All" ? 1 : Math.max(1, Math.ceil(controls.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const visibleControls =
+    pageSize === "All"
+      ? controls
+      : controls.slice((safePage - 1) * pageSize, safePage * pageSize);
   return (
     <section className="panel controls-panel">
       <div className="panel-heading controls-heading">
@@ -5645,7 +5747,7 @@ function ControlTable({
             </tr>
           </thead>
           <tbody>
-            {controls.map((control) => (
+            {visibleControls.map((control) => (
               <tr key={control.id} onClick={() => openControl(control)}>
                 <td>
                   <div className="control-title">
@@ -5718,8 +5820,16 @@ function ControlTable({
         )}
       </div>
       <div className="table-footer">
-        <span>Showing {controls.length} controls</span>
-        <span>Select a row to view or configure it</span>
+        <PaginationBar
+          total={controls.length}
+          page={safePage}
+          pageSize={pageSize}
+          onPageChange={setPage}
+          onPageSizeChange={(nextPageSize) => {
+            setPageSize(nextPageSize);
+            setPage(1);
+          }}
+        />
       </div>
     </section>
   );
