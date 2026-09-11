@@ -30,6 +30,30 @@ import {
 } from "./control-domain";
 import readXlsxFile from "read-excel-file";
 import writeXlsxFile from "write-excel-file";
+import {
+  Phase1Provider,
+  usePhase1,
+  OwnerPicker,
+  LocalFileLink,
+  ScheduleFields,
+  CalendarSetup,
+  GuidanceInbox,
+  ReminderSetup,
+  TestDirectory,
+  BulkOwnership,
+  BackupPanel,
+  OperationalReport,
+} from "./phase1-workspace";
+import {
+  dueInPeriod,
+  scheduledDue,
+  assignmentReset,
+  fileLabel,
+  csvCell,
+  isDate,
+} from "./phase1-domain";
+import { storeLocalFile } from "./local-files";
+import { persistWorkspaceValue } from "./local-state";
 
 type Role = "Controller Admin" | "Control Owner";
 type Nav =
@@ -38,6 +62,7 @@ type Nav =
   | "Controls library"
   | "Reports"
   | "Gap remediation"
+  | "Guidance requests"
   | "Admin setup";
 type Overlay = "help" | "notifications" | "profile" | null;
 type Audience = "Leadership" | "Site owners" | "Controllers";
@@ -46,6 +71,7 @@ type PageSize = 10 | 25 | 50 | "All";
 type OwnerTask = "ownership" | "procedure" | "support";
 type SavedView = {
   name: string;
+  includeNotDue?: boolean;
   businessProcess?: string;
   process: string;
   status: string;
@@ -64,10 +90,8 @@ type SavedView = {
   dtpStatus?: string;
 };
 
-const CURRENT_USER = "Demo Account";
 const DEMO_INITIALS = "DA";
 const DATA_VERSION = "stakeholder-feedback-v2";
-const DEMO_OWNERS = [CURRENT_USER];
 const DEFAULT_SCOPE: ScopeConfig = {
   regions: ["EU"],
   countries: ["Netherlands", "UK"],
@@ -81,6 +105,10 @@ const normalizeControl = (control: InventoryControl): InventoryControl => ({
   objective: control.objective || "",
   riskDescription: control.riskDescription || "",
   description: control.description || control.instructions || "",
+  instructions:
+    control.instructions === control.description
+      ? ""
+      : control.instructions || "",
   attestationFrequency: control.attestationFrequency || control.frequency,
   fraudControl: control.fraudControl || false,
   evidenceRequirement: control.evidenceRequirement || "Not scoped",
@@ -88,7 +116,8 @@ const normalizeControl = (control: InventoryControl): InventoryControl => ({
   country: control.country || "",
   applicable: control.applicable ?? true,
   lifecycle:
-    control.lifecycle || (control.applicable === false ? "Not applicable" : "Active"),
+    control.lifecycle ||
+    (control.applicable === false ? "Not applicable" : "Active"),
   dtpSummary: control.dtpSummary || "",
   dtpOwner: control.dtpOwner || "Controller Admin",
   dtpVersion: control.dtpVersion || "",
@@ -126,6 +155,7 @@ const DEFAULT_VIEWS: SavedView[] = [
 ];
 
 const statusClass: Record<ControlStatus, string> = {
+  "Not due this period": "neutral",
   Certified: "success",
   "Ready to certify": "success",
   "Performed with deviations": "warning",
@@ -166,7 +196,8 @@ const attestationSchedule = (frequency: string) => {
     return "Attest in the final quarter of the year";
   if (normalized.includes("quarter")) return "Attest once each quarter";
   if (normalized.includes("semi")) return "Attest twice each year";
-  if (normalized.includes("event")) return "Attest when the triggering event occurs";
+  if (normalized.includes("event"))
+    return "Attest when the triggering event occurs";
   return "Attest during each applicable Mars reporting period";
 };
 
@@ -177,10 +208,7 @@ const evidenceLabel = (control: InventoryControl) =>
       ? "Not required"
       : "Not yet scoped";
 
-const workflowStage = (
-  control: InventoryControl,
-  evidence: string[] = [],
-) => {
+const workflowStage = (control: InventoryControl, evidence: string[] = []) => {
   if (control.owner === "Unassigned") return "Unassigned";
   if (control.reassignmentRequested) return "Reassignment requested";
   if (control.status === "Certified") return "Certified";
@@ -292,6 +320,11 @@ const copy: Record<Nav, { eyebrow: string; title: string; body: string }> = {
     title: "Configure the hub as the organization evolves.",
     body: "Manage scope, applicability, ownership, evidence, instructions and reminders without changing the application.",
   },
+  "Guidance requests": {
+    eyebrow: "People & support",
+    title: "Ask. Collaborate. Move forward.",
+    body: "Track control questions, Controller responses and resolution in one place.",
+  },
 };
 
 const adminNav: Array<[Nav, string]> = [
@@ -299,11 +332,13 @@ const adminNav: Array<[Nav, string]> = [
   ["Controls library", "◇"],
   ["Reports", "▤"],
   ["Gap remediation", "!"],
+  ["Guidance requests", "?"],
   ["Admin setup", "⚙"],
 ];
 const ownerNav: Array<[Nav, string]> = [
   ["My controls", "✓"],
   ["Controls library", "◇"],
+  ["Guidance requests", "?"],
 ];
 
 function Metric({
@@ -338,14 +373,23 @@ function Metric({
 }
 
 export default function IcebreakerApp() {
+  return (
+    <Phase1Provider>
+      <IcebreakerWorkspace />
+    </Phase1Provider>
+  );
+}
+
+function IcebreakerWorkspace() {
+  const { state: phase1, currentUser: CURRENT_USER } = usePhase1();
   const [role, setRole] = useState<Role>("Controller Admin");
   const [activeNav, setActiveNav] = useState<Nav>("Control tower");
   const [definitions, setDefinitions] = useState<InventoryControl[]>(
     inventoryControls.map(normalizeControl),
   );
-  const [executions, setExecutions] = useState<Record<string, ControlExecution>>(
-    {},
-  );
+  const [executions, setExecutions] = useState<
+    Record<string, ControlExecution>
+  >({});
   const [ownershipChanges, setOwnershipChanges] = useState<OwnershipChange[]>(
     [],
   );
@@ -373,31 +417,53 @@ export default function IcebreakerApp() {
     "All attestation frequencies",
   );
   const [dtpFilter, setDtpFilter] = useState("All DTP statuses");
+  const [includeNotDue, setIncludeNotDue] = useState(false);
   const [scopeConfig, setScopeConfig] = useState<ScopeConfig>(DEFAULT_SCOPE);
   const [audience, setAudience] = useState<Audience>("Leadership");
   const [savedViews, setSavedViews] = useState<SavedView[]>(DEFAULT_VIEWS);
   const [attachments, setAttachments] = useState<Record<string, string[]>>({});
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [toast, setToast] = useState("");
-  const [period, setPeriod] = useState("July 2026");
+  const [period, setPeriod] = useState("Q3 2026");
   const [hydrated, setHydrated] = useState(false);
 
   const controls = useMemo(
     () =>
       definitions.map((definition) => {
-        const execution =
-          executions[executionKey(period, definition.id)] ||
-          defaultExecution(definition, period);
+        const existing = executions[executionKey(period, definition.id)];
+        const calendarPeriod = phase1.calendar.find((p) => p.id === period);
+        const execution = existing || {
+          ...defaultExecution(definition, period),
+          due: scheduledDue(definition, calendarPeriod),
+        };
         const merged = { ...definition, ...execution };
+        const scheduled =
+          dueInPeriod(merged, calendarPeriod) ||
+          merged.activatedPeriods?.includes(period) ||
+          Boolean(
+            merged.acknowledgedAt || merged.draftSavedAt || merged.certifiedAt,
+          );
         return {
           ...merged,
-          status: derivedStatus(
-            merged,
-            attachments[executionKey(period, definition.id)] || [],
-          ),
+          due: scheduled ? merged.due : "Not scheduled",
+          status: !scheduled
+            ? ("Not due this period" as ControlStatus)
+            : derivedStatus(
+                merged,
+                attachments[executionKey(period, definition.id)] || [],
+              ),
         };
       }),
-    [definitions, executions, period, attachments],
+    [definitions, executions, period, attachments, phase1.calendar],
+  );
+  const scheduledControls = controls.filter(
+    (c) =>
+      dueInPeriod(
+        c,
+        phase1.calendar.find((p) => p.id === period),
+      ) ||
+      c.activatedPeriods?.includes(period) ||
+      Boolean(c.acknowledgedAt || c.draftSavedAt || c.certifiedAt),
   );
 
   useEffect(() => {
@@ -415,7 +481,7 @@ export default function IcebreakerApp() {
           setSavedViews(DEFAULT_VIEWS);
           setAttachments({});
           setScopeConfig(DEFAULT_SCOPE);
-          window.localStorage.setItem("icebreaker-data-version", DATA_VERSION);
+          persistWorkspaceValue("icebreaker-data-version", DATA_VERSION);
           setHydrated(true);
           return;
         }
@@ -463,7 +529,7 @@ export default function IcebreakerApp() {
                     owner:
                       control.owner === "Unassigned"
                         ? "Unassigned"
-                        : CURRENT_USER,
+                        : "Demo Account",
                     status: control.status,
                     due: control.due,
                     region: control.region || "Europe",
@@ -536,51 +602,59 @@ export default function IcebreakerApp() {
   }, []);
   useEffect(() => {
     if (!hydrated) return;
-    window.localStorage.setItem(
+    const params = new URLSearchParams(window.location.search);
+    const target = params.get("control");
+    const targetPeriod = params.get("period");
+    if (!target) return;
+    const timer = setTimeout(() => {
+      if (
+        targetPeriod &&
+        targetPeriod !== period &&
+        phase1.calendar.some((p) => p.id === targetPeriod)
+      ) {
+        setPeriod(targetPeriod);
+        return;
+      }
+      const control = controls.find((c) => c.id === target);
+      if (control) setSelected(control);
+      const url = new URL(window.location.href);
+      url.searchParams.delete("control");
+      url.searchParams.delete("period");
+      history.replaceState(null, "", url);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [hydrated, period, controls, phase1.calendar]);
+  useEffect(() => {
+    if (!hydrated) return;
+    persistWorkspaceValue(
       "icebreaker-control-definitions",
       JSON.stringify(definitions),
     );
-    window.localStorage.setItem(
-      "icebreaker-executions",
-      JSON.stringify(executions),
-    );
-    window.localStorage.setItem(
+    persistWorkspaceValue("icebreaker-executions", JSON.stringify(executions));
+    persistWorkspaceValue(
       "icebreaker-ownership-changes",
       JSON.stringify(ownershipChanges),
     );
-    window.localStorage.setItem("icebreaker-gaps", JSON.stringify(gaps));
-    window.localStorage.setItem(
+    persistWorkspaceValue("icebreaker-gaps", JSON.stringify(gaps));
+    persistWorkspaceValue(
       "icebreaker-audit-events",
       JSON.stringify(auditEvents),
     );
-  }, [
-    definitions,
-    executions,
-    ownershipChanges,
-    gaps,
-    auditEvents,
-    hydrated,
-  ]);
+  }, [definitions, executions, ownershipChanges, gaps, auditEvents, hydrated]);
   useEffect(() => {
     if (!hydrated) return;
-    window.localStorage.setItem(
-      "icebreaker-saved-views",
-      JSON.stringify(savedViews),
-    );
+    persistWorkspaceValue("icebreaker-saved-views", JSON.stringify(savedViews));
   }, [savedViews, hydrated]);
   useEffect(() => {
     if (!hydrated) return;
-    window.localStorage.setItem(
+    persistWorkspaceValue(
       "icebreaker-attachments",
       JSON.stringify(attachments),
     );
   }, [attachments, hydrated]);
   useEffect(() => {
     if (!hydrated) return;
-    window.localStorage.setItem(
-      "icebreaker-scope",
-      JSON.stringify(scopeConfig),
-    );
+    persistWorkspaceValue("icebreaker-scope", JSON.stringify(scopeConfig));
   }, [scopeConfig, hydrated]);
 
   const searchedControls = useMemo(
@@ -596,14 +670,28 @@ export default function IcebreakerApp() {
     () =>
       searchedControls.filter(
         (control) =>
-          control.owner === CURRENT_USER && control.lifecycle === "Active",
+          control.owner === CURRENT_USER &&
+          control.lifecycle === "Active" &&
+          (dueInPeriod(
+            control,
+            phase1.calendar.find((p) => p.id === period),
+          ) ||
+            control.activatedPeriods?.includes(period) ||
+            Boolean(
+              control.acknowledgedAt ||
+                control.draftSavedAt ||
+                control.certifiedAt,
+            )),
       ),
-    [searchedControls],
+    [searchedControls, CURRENT_USER, phase1.calendar, period],
   );
   const filtered = useMemo(
     () =>
       searchedControls.filter((control) => {
         return (
+          (activeNav !== "Reports" ||
+            includeNotDue ||
+            control.status !== "Not due this period") &&
           (pillarFilter === "All control pillars" ||
             control.pillar === pillarFilter) &&
           (processFilter === "All processes" ||
@@ -665,6 +753,8 @@ export default function IcebreakerApp() {
       frequencyFilter,
       attestationFilter,
       dtpFilter,
+      activeNav,
+      includeNotDue,
     ],
   );
 
@@ -673,11 +763,7 @@ export default function IcebreakerApp() {
     setToast(message);
     window.setTimeout(() => setToast(""), 2600);
   };
-  const appendAudit = (
-    controlId: string,
-    action: string,
-    detail: string,
-  ) => {
+  const appendAudit = (controlId: string, action: string, detail: string) => {
     setAuditEvents((current) => [
       {
         id: crypto.randomUUID(),
@@ -701,6 +787,8 @@ export default function IcebreakerApp() {
         Object.assign(definitionUpdates, { [key]: value });
       }
     });
+    // Default ownership follows an approved change; past execution records do not.
+    if (updates.owner !== undefined) definitionUpdates.owner = updates.owner;
     if (Object.keys(definitionUpdates).length) {
       setDefinitions((current) =>
         current.map((control) =>
@@ -718,7 +806,13 @@ export default function IcebreakerApp() {
           return {
             ...current,
             [key]: {
-              ...(current[key] || defaultExecution(definition, period)),
+              ...(current[key] || {
+                ...defaultExecution(definition, period),
+                due: scheduledDue(
+                  definition,
+                  phase1.calendar.find((p) => p.id === period),
+                ),
+              }),
               ...executionUpdates,
             },
           };
@@ -730,10 +824,39 @@ export default function IcebreakerApp() {
     );
   };
   const setControls = (next: InventoryControl[]) => {
-    setDefinitions(next.map(normalizeControl));
+    setDefinitions(
+      next.map((control) =>
+        normalizeControl({
+          ...control,
+          accepted: false,
+          understood: false,
+          acknowledgedAt: undefined,
+          performed: false,
+          executionOutcome: "Not recorded",
+          deviationNotes: "",
+          draftSavedAt: undefined,
+          documentationReviewed: false,
+          documentationReviewedAt: undefined,
+          certifiedAt: undefined,
+          reassignmentRequested: false,
+          status:
+            control.owner === "Unassigned"
+              ? "Unassigned"
+              : "Acknowledgement pending",
+        }),
+      ),
+    );
     setExecutions((current) => {
       const updated = { ...current };
       next.forEach((control) => {
+        const previous = controls.find((c) => c.id === control.id);
+        if (
+          !current[executionKey(period, control.id)] &&
+          previous &&
+          previous.owner === control.owner &&
+          previous.due === control.due
+        )
+          return;
         updated[executionKey(period, control.id)] = {
           ...(current[executionKey(period, control.id)] ||
             defaultExecution(control, period)),
@@ -768,6 +891,7 @@ export default function IcebreakerApp() {
   const downloadReport = () => {
     const rows = [
       [
+        "Certification period",
         "Control instance ID",
         "Control #",
         "Control pillar",
@@ -801,6 +925,7 @@ export default function IcebreakerApp() {
         "Due",
       ],
       ...filtered.map((c) => [
+        period,
         c.id,
         controlCode(c),
         c.pillar,
@@ -822,10 +947,7 @@ export default function IcebreakerApp() {
         c.understood ? "Yes" : "No",
         c.acknowledgedAt || "",
         c.status,
-        workflowStage(
-          c,
-          attachments[executionKey(period, c.id)] || [],
-        ),
+        workflowStage(c, attachments[executionKey(period, c.id)] || []),
         c.draftSavedAt || "",
         c.reassignmentRequested ? "Yes" : "No",
         c.documentationReviewed ? "Yes" : "No",
@@ -833,15 +955,13 @@ export default function IcebreakerApp() {
         c.dtpStatus,
         c.executionOutcome || "Not recorded",
         c.deviationNotes || "",
-        (attachments[executionKey(period, c.id)] || []).join("; "),
+        (attachments[executionKey(period, c.id)] || [])
+          .map(fileLabel)
+          .join("; "),
         c.due,
       ]),
     ];
-    const csv = rows
-      .map((row) =>
-        row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","),
-      )
-      .join("\n");
+    const csv = rows.map((row) => row.map(csvCell).join(",")).join("\n");
     const href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
     const link = document.createElement("a");
     link.href = href;
@@ -853,7 +973,7 @@ export default function IcebreakerApp() {
 
   const pageCopy = copy[activeNav];
   return (
-    <div className="app-shell">
+    <div className="app-shell" inert={!hydrated} aria-busy={!hydrated}>
       <aside className="sidebar">
         <div className="brand-block">
           <img
@@ -871,7 +991,7 @@ export default function IcebreakerApp() {
           <span>ICE</span>
           <div>
             <strong>Controls workspace</strong>
-            <small>Food & Nutrition · Enterprise-ready</small>
+            <small>Food & Nutrition · Controls hub</small>
           </div>
         </div>
         <nav aria-label="Primary navigation">
@@ -960,19 +1080,24 @@ export default function IcebreakerApp() {
                 aria-label="Certification period"
                 value={period}
                 onChange={(event) => {
+                  setSelected(null);
                   setPeriod(event.target.value);
                   notify(
                     `${event.target.value} selected · execution and evidence are tracked separately`,
                   );
                 }}
               >
-                <option>July 2026</option>
-                <option>Q3 2026</option>
-                <option>FY 2026</option>
+                {phase1.calendar.map((p) => (
+                  <option key={p.id}>{p.id}</option>
+                ))}
               </select>
               <small>Active review & reporting cycle</small>
             </label>
           </section>
+          <p className="prototype-notice">
+            Local testing workspace · changes and documents stay in this browser
+            · test accounts are not secure sign-in · emails are simulated
+          </p>
           <section className="purpose-line">
             <strong>Today, we’re making control ownership clear.</strong>
             <span>
@@ -983,7 +1108,9 @@ export default function IcebreakerApp() {
           {activeNav === "Control tower" && (
             <ControlTower
               controls={searchedControls.filter(
-                (control) => control.lifecycle === "Active",
+                (control) =>
+                  control.lifecycle === "Active" &&
+                  scheduledControls.some((c) => c.id === control.id),
               )}
               openControl={setSelected}
               setActiveNav={setActiveNav}
@@ -1012,49 +1139,73 @@ export default function IcebreakerApp() {
             />
           )}
           {activeNav === "Reports" && (
-            <Reports
-              controls={filtered}
-              availableControls={controls}
-              processFilter={processFilter}
-              setProcessFilter={setProcessFilter}
-              businessProcessFilter={businessProcessFilter}
-              setBusinessProcessFilter={setBusinessProcessFilter}
-              statusFilter={statusFilter}
-              setStatusFilter={setStatusFilter}
-              evidenceFilter={evidenceFilter}
-              setEvidenceFilter={setEvidenceFilter}
-              pillarFilter={pillarFilter}
-              setPillarFilter={setPillarFilter}
-              regionFilter={regionFilter}
-              setRegionFilter={setRegionFilter}
-              countryFilter={countryFilter}
-              setCountryFilter={setCountryFilter}
-              siteFilter={siteFilter}
-              setSiteFilter={setSiteFilter}
-              ownerFilter={ownerFilter}
-              setOwnerFilter={setOwnerFilter}
-              typeFilter={typeFilter}
-              setTypeFilter={setTypeFilter}
-              applicabilityFilter={applicabilityFilter}
-              setApplicabilityFilter={setApplicabilityFilter}
-              keyFilter={keyFilter}
-              setKeyFilter={setKeyFilter}
-              frequencyFilter={frequencyFilter}
-              setFrequencyFilter={setFrequencyFilter}
-              attestationFilter={attestationFilter}
-              setAttestationFilter={setAttestationFilter}
-              dtpFilter={dtpFilter}
-              setDtpFilter={setDtpFilter}
-              scopeConfig={scopeConfig}
-              audience={audience}
-              setAudience={setAudience}
-              savedViews={savedViews}
-              setSavedViews={setSavedViews}
-              downloadReport={downloadReport}
-              notify={notify}
+            <>
+              <label className="include-not-due">
+                <input
+                  type="checkbox"
+                  checked={includeNotDue}
+                  onChange={(e) => setIncludeNotDue(e.target.checked)}
+                />{" "}
+                Include controls not due in the selected period
+              </label>
+              <OperationalReport
+                controls={filtered}
+                gaps={gaps}
+                pending={ownershipChanges}
+              />
+              <Reports
+                controls={filtered}
+                availableControls={controls}
+                processFilter={processFilter}
+                setProcessFilter={setProcessFilter}
+                businessProcessFilter={businessProcessFilter}
+                setBusinessProcessFilter={setBusinessProcessFilter}
+                statusFilter={statusFilter}
+                setStatusFilter={setStatusFilter}
+                evidenceFilter={evidenceFilter}
+                setEvidenceFilter={setEvidenceFilter}
+                pillarFilter={pillarFilter}
+                setPillarFilter={setPillarFilter}
+                regionFilter={regionFilter}
+                setRegionFilter={setRegionFilter}
+                countryFilter={countryFilter}
+                setCountryFilter={setCountryFilter}
+                siteFilter={siteFilter}
+                setSiteFilter={setSiteFilter}
+                ownerFilter={ownerFilter}
+                setOwnerFilter={setOwnerFilter}
+                typeFilter={typeFilter}
+                setTypeFilter={setTypeFilter}
+                applicabilityFilter={applicabilityFilter}
+                setApplicabilityFilter={setApplicabilityFilter}
+                keyFilter={keyFilter}
+                setKeyFilter={setKeyFilter}
+                frequencyFilter={frequencyFilter}
+                setFrequencyFilter={setFrequencyFilter}
+                attestationFilter={attestationFilter}
+                setAttestationFilter={setAttestationFilter}
+                dtpFilter={dtpFilter}
+                setDtpFilter={setDtpFilter}
+                scopeConfig={scopeConfig}
+                audience={audience}
+                setAudience={setAudience}
+                savedViews={savedViews}
+                includeNotDue={includeNotDue}
+                setIncludeNotDue={setIncludeNotDue}
+                setSavedViews={setSavedViews}
+                downloadReport={downloadReport}
+                notify={notify}
+                openControl={setSelected}
+                ownershipChanges={ownershipChanges}
+                auditEvents={auditEvents}
+              />
+            </>
+          )}
+          {activeNav === "Guidance requests" && (
+            <GuidanceInbox
+              role={role}
+              controls={controls}
               openControl={setSelected}
-              ownershipChanges={ownershipChanges}
-              auditEvents={auditEvents}
             />
           )}
           {activeNav === "Gap remediation" && (
@@ -1077,6 +1228,9 @@ export default function IcebreakerApp() {
               setActiveNav={setActiveNav}
               scopeConfig={scopeConfig}
               setScopeConfig={setScopeConfig}
+              period={period}
+              scheduledControls={scheduledControls}
+              appendAudit={appendAudit}
             />
           )}
         </div>
@@ -1084,7 +1238,7 @@ export default function IcebreakerApp() {
 
       {selected && (
         <ControlDrawerBoundary
-          key={`${period}-${selected.id}-${role}`}
+          key={`${period}-${selected.id}-${role}-${CURRENT_USER}`}
           close={() => setSelected(null)}
         >
           <ControlDrawer
@@ -1173,6 +1327,7 @@ function OverlayPanel({
   changeRole: (role: Role) => void;
   go: (nav: Nav) => void;
 }) {
+  const { currentUser: CURRENT_USER, setCurrentUser } = usePhase1();
   const unassigned = controls.filter(
     (control) => control.owner === "Unassigned",
   ).length;
@@ -1246,13 +1401,17 @@ function OverlayPanel({
               </article>
               <article>
                 <span>Prototype storage</span>
-                <strong>References now; governed storage in production</strong>
+                <strong>
+                  Browser-local documents now; governed storage later
+                </strong>
                 <p>
-                  Local uploads retain filename metadata only. Use approved
-                  SharePoint or evidence links for retrieval. The enterprise
-                  target separates files into governed GCP object storage and
-                  keeps metadata in Firestore, subject to approved retention
-                  and file-size rules.
+                  New uploads retain actual files in this browser (20 MB per
+                  file, 150 MB workspace limit). Older filename-only entries
+                  must be uploaded again. Use Admin setup → Test data to export
+                  a backup. Files and records are not shared across browsers or
+                  devices. The intended Azure handoff includes governed storage,
+                  Microsoft identity and server-enforced access; none is
+                  connected here.
                 </p>
               </article>
             </div>
@@ -1292,6 +1451,14 @@ function OverlayPanel({
               ⇩ Download the complete ICEbreaker 101 guide
             </a>
             <a
+              className="doc-download"
+              href="./ICEbreaker-Phase-1-Review.html"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open the updated Phase 1 validation walkthrough
+            </a>
+            <a
               className="doc-download stakeholder-guide"
               href="./ICEbreaker-Stakeholder-Review-Guide.docx"
               download
@@ -1302,36 +1469,60 @@ function OverlayPanel({
         )}
         {type === "notifications" && (
           <div className="modal-body notification-list">
-            <button onClick={() => go("Admin setup")}>
-              <span className="alert-icon warning-bg">!</span>
+            <button onClick={() => go("Guidance requests")}>
+              <span className="alert-icon">?</span>
               <span>
-                <strong>{unassigned} controls need an owner</strong>
-                <small>
-                  Open Ownership setup to assign accountable Control Owners.
-                </small>
+                <strong>Guidance requests & responses</strong>
+                <small>Open your request list and Controller inbox.</small>
               </span>
               <b>›</b>
             </button>
-            <button onClick={() => go("Admin setup")}>
-              <span className="alert-icon warning-bg">D</span>
-              <span>
-                <strong>{missingDtp} desktop procedures need attention</strong>
-                <small>Add or review local step-by-step guidance.</small>
-              </span>
-              <b>›</b>
-            </button>
-            <button onClick={openProfile}>
-              <span className="alert-icon">✓</span>
-              <span>
-                <strong>{mine.length} controls assigned to Demo Account</strong>
-                <small>
-                  {mine.length
-                    ? "Open the profile to switch into the Control Owner review queue."
-                    : "Assign a control, then switch roles from the Demo Account profile."}
-                </small>
-              </span>
-              <b>›</b>
-            </button>
+            {role === "Controller Admin" && (
+              <>
+                <button onClick={() => go("Admin setup")}>
+                  <span className="alert-icon warning-bg">!</span>
+                  <span>
+                    <strong>{unassigned} controls need an owner</strong>
+                    <small>
+                      Open Ownership setup to assign accountable Control Owners.
+                    </small>
+                  </span>
+                  <b>›</b>
+                </button>
+                <button onClick={() => go("Admin setup")}>
+                  <span className="alert-icon warning-bg">D</span>
+                  <span>
+                    <strong>
+                      {missingDtp} desktop procedures need attention
+                    </strong>
+                    <small>Add or review local step-by-step guidance.</small>
+                  </span>
+                  <b>›</b>
+                </button>
+                <button onClick={openProfile}>
+                  <span className="alert-icon">✓</span>
+                  <span>
+                    <strong>
+                      {mine.length} controls assigned to {CURRENT_USER}
+                    </strong>
+                    <small>
+                      {mine.length
+                        ? "Open the profile to switch into the Control Owner review queue."
+                        : "Assign a control, then switch roles from the Demo Account profile."}
+                    </small>
+                  </span>
+                  <b>›</b>
+                </button>
+              </>
+            )}
+            {role === "Control Owner" && (
+              <button onClick={() => go("My controls")}>
+                <strong>
+                  {mine.length} scheduled controls assigned to you
+                </strong>
+                <small>Open your review queue</small>
+              </button>
+            )}
           </div>
         )}
         {type === "profile" && (
@@ -1352,6 +1543,17 @@ function OverlayPanel({
               </p>
             </div>
             <span className="section-kicker">Preview role</span>
+            <OwnerPicker
+              value={CURRENT_USER}
+              allowUnassigned={false}
+              label="Active test account"
+              onChange={(name) => {
+                if (name) {
+                  setCurrentUser(name);
+                  changeRole(role);
+                }
+              }}
+            />
             <div className="profile-role-switch">
               {(["Controller Admin", "Control Owner"] as const).map((item) => (
                 <button
@@ -1369,9 +1571,9 @@ function OverlayPanel({
               ))}
             </div>
             <p className="profile-assignment-note">
-              Controls assigned in this MVP are always assigned to Demo Account,
-              so switching to Control Owner shows the exact review queue created
-              during admin setup.
+              Choose a test account and role here. Control Owner shows only that
+              account’s scheduled assignments. This is a local role
+              demonstration, not authentication or server-enforced security.
             </p>
           </div>
         )}
@@ -1413,8 +1615,7 @@ function ControlTower({
     .filter((c) => c.status !== "Certified")
     .sort(
       (a, b) =>
-        (attentionPriority[a.status] ?? 9) -
-        (attentionPriority[b.status] ?? 9),
+        (attentionPriority[a.status] ?? 9) - (attentionPriority[b.status] ?? 9),
     )
     .slice(0, 3);
   const stageCounts = [
@@ -1494,7 +1695,8 @@ function ControlTower({
             <span>
               {pillar === "All controls"
                 ? controls.length
-                : controls.filter((control) => control.pillar === pillar).length}
+                : controls.filter((control) => control.pillar === pillar)
+                    .length}
             </span>
           </button>
         ))}
@@ -1503,7 +1705,9 @@ function ControlTower({
         <Metric
           label="Controls in scope"
           value={`${visibleControls.length}`}
-          note={towerPillar === "All controls" ? "All active pillars" : towerPillar}
+          note={
+            towerPillar === "All controls" ? "All active pillars" : towerPillar
+          }
         />
         <Metric
           label="Ownership assigned"
@@ -1530,7 +1734,9 @@ function ControlTower({
             <span className="section-kicker">Detailed workflow status</span>
             <h2>Stage and exception visibility</h2>
           </div>
-          <small>Stages may overlap with exception flags such as overdue.</small>
+          <small>
+            Stages may overlap with exception flags such as overdue.
+          </small>
         </div>
         <div className="workflow-status-grid">
           {stageCounts.map(([label, count, tone]) => (
@@ -1572,7 +1778,14 @@ function ControlTower({
               </div>
             </div>
             <div className="legend">
-              {(["Certified", "In progress", "Overdue", "Unassigned"] as ControlStatus[]).map((status) => (
+              {(
+                [
+                  "Certified",
+                  "In progress",
+                  "Overdue",
+                  "Unassigned",
+                ] as ControlStatus[]
+              ).map((status) => (
                 <div key={status}>
                   <span
                     className={`legend-dot ${status === "Certified" ? "on-track" : status === "Overdue" ? "overdue" : status === "Unassigned" ? "at-risk" : "in-review"}`}
@@ -1615,7 +1828,8 @@ function ControlTower({
               <h2>Needs your attention</h2>
             </div>
             <span className="count-badge">
-              {visibleControls.filter((c) => c.status !== "Certified").length} items
+              {visibleControls.filter((c) => c.status !== "Certified").length}{" "}
+              items
             </span>
           </div>
           {attention.map((control) => (
@@ -1732,8 +1946,12 @@ function MyControls({
                     onClick={() => setQueueFilter(filter)}
                   >
                     {filter}
-                    {filter === "Overdue" && overdue > 0 && <span>{overdue}</span>}
-                    {filter === "Due soon" && dueSoon > 0 && <span>{dueSoon}</span>}
+                    {filter === "Overdue" && overdue > 0 && (
+                      <span>{overdue}</span>
+                    )}
+                    {filter === "Due soon" && dueSoon > 0 && (
+                      <span>{dueSoon}</span>
+                    )}
                   </button>
                 ),
               )}
@@ -2002,6 +2220,8 @@ function Reports({
   openControl,
   ownershipChanges,
   auditEvents,
+  includeNotDue,
+  setIncludeNotDue,
 }: {
   controls: InventoryControl[];
   availableControls: InventoryControl[];
@@ -2045,6 +2265,8 @@ function Reports({
   openControl: (c: InventoryControl) => void;
   ownershipChanges: OwnershipChange[];
   auditEvents: AuditEvent[];
+  includeNotDue: boolean;
+  setIncludeNotDue: (value: boolean) => void;
 }) {
   const owners = Array.from(
     new Set(availableControls.map((c) => c.owner)),
@@ -2089,14 +2311,14 @@ function Reports({
         frequency: frequencyFilter,
         attestationFrequency: attestationFilter,
         dtpStatus: dtpFilter,
+        includeNotDue,
       },
     ]);
     notify(`Saved “${name}”`);
   };
   const load = (view: SavedView) => {
-    setBusinessProcessFilter(
-      view.businessProcess || "All business processes",
-    );
+    setIncludeNotDue(view.includeNotDue || false);
+    setBusinessProcessFilter(view.businessProcess || "All business processes");
     setProcessFilter(view.process);
     setStatusFilter(view.status);
     setEvidenceFilter(view.evidence);
@@ -2117,6 +2339,7 @@ function Reports({
     notify(`Loaded “${view.name}”`);
   };
   const clearFilters = () => {
+    setIncludeNotDue(false);
     setBusinessProcessFilter("All business processes");
     setProcessFilter("All processes");
     setStatusFilter("All statuses");
@@ -2393,19 +2616,37 @@ function Reports({
             </div>
           </div>
           {savedViews.map((view, index) => (
-            <button key={`${view.name}-${index}`} onClick={() => load(view)}>
-              <span className={`saved-icon s${index % 3}`}>▤</span>
-              <span>
-                <strong>{view.name}</strong>
-                <small>
-                  {view.audience} ·{" "}
-                  {view.process === "All processes"
-                    ? "All processes"
-                    : view.process}
-                </small>
-              </span>
-              <b>›</b>
-            </button>
+            <div className="saved-view-row" key={`${view.name}-${index}`}>
+              <button key={`${view.name}-${index}`} onClick={() => load(view)}>
+                <span className={`saved-icon s${index % 3}`}>▤</span>
+                <span>
+                  <strong>{view.name}</strong>
+                  <small>
+                    {view.audience} ·{" "}
+                    {view.process === "All processes"
+                      ? "All processes"
+                      : view.process}
+                  </small>
+                </span>
+                <b>›</b>
+              </button>
+              <button
+                className="delete-view"
+                aria-label={`Delete saved view ${view.name}`}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Delete saved view “${view.name}”? Control data is not deleted.`,
+                    )
+                  ) {
+                    setSavedViews(savedViews.filter((_, i) => i !== index));
+                    notify("Saved view deleted; control data unchanged");
+                  }
+                }}
+              >
+                ×
+              </button>
+            </div>
           ))}
         </aside>
       </div>
@@ -2428,8 +2669,7 @@ function Reports({
                     {change.fromOwner} → {change.toOwner}
                   </strong>
                   <small>
-                    {change.status || "Completed"} ·{" "}
-                    {change.period} · Handover{" "}
+                    {change.status || "Completed"} · {change.period} · Handover{" "}
                     {change.handoverConfirmed ? "confirmed" : "missing"} ·
                     Training{" "}
                     {change.trainingConfirmed ? "confirmed" : "missing"}
@@ -2439,7 +2679,9 @@ function Reports({
             ) : (
               <div className="empty-state">
                 <strong>No ownership activity recorded.</strong>
-                <span>Reassignment requests and completed changes appear here.</span>
+                <span>
+                  Reassignment requests and completed changes appear here.
+                </span>
               </div>
             )}
           </article>
@@ -2465,7 +2707,9 @@ function Reports({
             ) : (
               <div className="empty-state">
                 <strong>No control activity recorded.</strong>
-                <span>Certifications and material changes will appear here.</span>
+                <span>
+                  Certifications and material changes will appear here.
+                </span>
               </div>
             )}
           </article>
@@ -2550,49 +2794,6 @@ function AudienceDashboard({
         </article>
       </section>
     );
-  if (audience === "Site owners")
-    return (
-      <section className="report-visual-grid">
-        <article className="panel visual-card">
-          <span className="section-kicker">Site readiness</span>
-          <h2>Ownership coverage</h2>
-          <strong className="big-number">
-            {Math.round((assigned / count) * 100)}%
-          </strong>
-          <p>
-            {assigned} of {controls.length} controls assigned
-          </p>
-        </article>
-        <article className="panel visual-card wide">
-          <span className="section-kicker">Recommended site view</span>
-          <h2>Readiness by site</h2>
-          <div className="site-placeholder">
-            <span>⌂</span>
-            <div>
-              <strong>Add sites in Admin setup to compare performance</strong>
-              <small>
-                The production view will rank certification, evidence and
-                overdue controls by site.
-              </small>
-            </div>
-          </div>
-          <div className="mini-recommendations">
-            <span>Certification rate</span>
-            <span>Overdue controls</span>
-            <span>Evidence completeness</span>
-            <span>Owner coverage</span>
-          </div>
-        </article>
-        <article className="panel visual-card">
-          <span className="section-kicker">Procedure readiness</span>
-          <h2>DTP coverage</h2>
-          <strong className="big-number">
-            {Math.round((dtp / count) * 100)}%
-          </strong>
-          <p>{dtp} desktop procedures current</p>
-        </article>
-      </section>
-    );
   return (
     <section className="report-visual-grid">
       <article className="panel visual-card wide">
@@ -2605,9 +2806,8 @@ function AudienceDashboard({
             ["Certified", certified],
             [
               "Evidence rules set",
-              controls.filter(
-                (c) => c.evidenceRequirement !== "Not scoped",
-              ).length,
+              controls.filter((c) => c.evidenceRequirement !== "Not scoped")
+                .length,
             ],
           ].map(([label, value]) => (
             <div key={String(label)}>
@@ -2771,6 +2971,7 @@ function GapRemediation({
   appendAudit: (controlId: string, action: string, detail: string) => void;
   period: string;
 }) {
+  const { currentUser: CURRENT_USER } = usePhase1();
   const [newGap, setNewGap] = useState({
     controlId: controls[0]?.id || "",
     title: "",
@@ -2802,7 +3003,16 @@ function GapRemediation({
   };
   const updateGap = (id: string, updates: Partial<RemediationGap>) =>
     updateGaps((current) =>
-      current.map((gap) => (gap.id === id ? { ...gap, ...updates } : gap)),
+      current.map((gap) => {
+        if (gap.id !== id) return gap;
+        const next = { ...gap, ...updates };
+        if (
+          next.status === "Closed" &&
+          (!next.controllerApproved || !next.closureEvidence.trim())
+        )
+          next.status = "Ready for closure";
+        return next;
+      }),
     );
   const openGaps = gaps.filter((gap) => gap.status !== "Closed");
   const overdue = openGaps.filter(
@@ -2818,8 +3028,7 @@ function GapRemediation({
           <strong>
             {
               openGaps.filter(
-                (gap) =>
-                  gap.severity === "High" || gap.severity === "Critical",
+                (gap) => gap.severity === "High" || gap.severity === "Critical",
               ).length
             }
           </strong>{" "}
@@ -2917,7 +3126,9 @@ function GapRemediation({
                 </span>
                 <h2>{gap.title}</h2>
               </div>
-              <span className={`status ${gap.status === "Closed" ? "success" : "warning"}`}>
+              <span
+                className={`status ${gap.status === "Closed" ? "success" : "warning"}`}
+              >
                 {gap.status}
               </span>
             </div>
@@ -2933,6 +3144,30 @@ function GapRemediation({
               </div>
             </div>
             <div className="report-filters">
+              <label>
+                ServiceNow reference
+                <input
+                  value={gap.serviceNowReference || ""}
+                  onChange={(e) =>
+                    updateGap(gap.id, { serviceNowReference: e.target.value })
+                  }
+                  placeholder="Optional external gap number"
+                />
+                <small>ICEbreaker ID stays unchanged: {gap.id}</small>
+              </label>
+              <OwnerPicker
+                label="Remediation owner"
+                value={gap.owner}
+                onChange={(owner) => updateGap(gap.id, { owner })}
+              />
+              <label>
+                Target date
+                <input
+                  type="date"
+                  value={gap.due}
+                  onChange={(e) => updateGap(gap.id, { due: e.target.value })}
+                />
+              </label>
               <label>
                 Status
                 <select
@@ -3007,6 +3242,9 @@ function AdminSetup({
   setActiveNav,
   scopeConfig,
   setScopeConfig,
+  period,
+  scheduledControls,
+  appendAudit,
 }: {
   controls: InventoryControl[];
   setControls: (v: InventoryControl[]) => void;
@@ -3016,16 +3254,17 @@ function AdminSetup({
   setActiveNav: (n: Nav) => void;
   scopeConfig: ScopeConfig;
   setScopeConfig: (scope: ScopeConfig) => void;
+  period: string;
+  scheduledControls: InventoryControl[];
+  appendAudit: (id: string, action: string, detail: string) => void;
 }) {
+  const { state: phase1, currentUser: CURRENT_USER } = usePhase1();
   const [tab, setTab] = useState("Scope & structure");
   const [region, setRegion] = useState("");
   const [country, setCountry] = useState("");
   const [site, setSite] = useState("");
-  const [reminderLog, setReminderLog] = useState("");
-  const [reminderSender, setReminderSender] = useState(CURRENT_USER);
   const [requirementPage, setRequirementPage] = useState(1);
-  const [requirementPageSize, setRequirementPageSize] =
-    useState<PageSize>(25);
+  const [requirementPageSize, setRequirementPageSize] = useState<PageSize>(25);
   const [importPreview, setImportPreview] = useState<{
     rows: Record<string, string>[];
     errors: string[];
@@ -3044,10 +3283,7 @@ function AdminSetup({
     requirementPageSize === "All"
       ? 1
       : Math.max(1, Math.ceil(controls.length / requirementPageSize));
-  const safeRequirementPage = Math.min(
-    requirementPage,
-    requirementTotalPages,
-  );
+  const safeRequirementPage = Math.min(requirementPage, requirementTotalPages);
   const visibleRequirementControls =
     requirementPageSize === "All"
       ? controls
@@ -3080,9 +3316,7 @@ function AdminSetup({
       [kind]: [...scopeConfig[kind], cleaned],
     });
     clear();
-    notify(
-      `${cleaned} added to ${kind === "sites" ? "units & sites" : kind}`,
-    );
+    notify(`${cleaned} added to ${kind === "sites" ? "units & sites" : kind}`);
   };
   const removeScope = (kind: keyof ScopeConfig, value: string) => {
     setScopeConfig({
@@ -3121,6 +3355,10 @@ function AdminSetup({
       "Evidence Needed (Y/N)",
       "Lifecycle",
       "Due Date",
+      "Deadline Week",
+      "Deadline Day",
+      "Regional Instructions",
+      "Unit Instructions",
     ];
     await writeXlsxFile(
       [
@@ -3147,6 +3385,10 @@ function AdminSetup({
           "Y",
           "Active",
           "2026-07-31",
+          "",
+          "5",
+          "",
+          "",
         ].map((value) => ({ value })),
       ],
       { fileName: "ICEbreaker-admin-upload-template.xlsx" },
@@ -3155,7 +3397,16 @@ function AdminSetup({
   };
   const importWorkbook = async (file?: File) => {
     if (!file) return;
-    const sheet = await readXlsxFile(file);
+    let sheet;
+    try {
+      sheet = await readXlsxFile(file);
+    } catch {
+      notify(
+        "Could not read this Excel file. Use the downloaded .xlsx template.",
+      );
+      setImportPreview(null);
+      return;
+    }
     const headers = (sheet.shift() || []).map((value) =>
       String(value || "").trim(),
     );
@@ -3183,6 +3434,7 @@ function AdminSetup({
         }),
       );
     const errors = missing.map((header) => `Missing column: ${header}`);
+    if (!rows.length) errors.push("No control rows found");
     const seen = new Set<string>();
     rows.forEach((cells, index) => {
       const controlNumber = cells[headers.indexOf("Control #")];
@@ -3195,8 +3447,69 @@ function AdminSetup({
         countryValue,
         unitValue,
       );
-      if (!controlNumber)
-        errors.push(`Row ${index + 2}: Control # is required`);
+      if (!controlNumber || !regionValue || !countryValue || !unitValue)
+        errors.push(
+          `Row ${index + 2}: Control #, Region, Country and Unit are required`,
+        );
+      const row = Object.fromEntries(headers.map((h, i) => [h, cells[i]]));
+      for (const field of [
+        "Evidence Needed (Y/N)",
+        "Key Control?",
+        "Fraud Control?",
+      ])
+        if (
+          row[field] &&
+          !["Y", "N", "YES", "NO"].includes(row[field].toUpperCase())
+        )
+          errors.push(`Row ${index + 2}: ${field} must be Y or N`);
+      if (
+        row["Control Owner"] &&
+        row["Control Owner"] !== "Unassigned" &&
+        !phase1.people.some((p) => p.name === row["Control Owner"])
+      )
+        errors.push(
+          `Row ${index + 2}: owner must match a configured test account`,
+        );
+      if (
+        row["Lifecycle"] &&
+        !["Active", "Not applicable", "Archived"].includes(row["Lifecycle"])
+      )
+        errors.push(`Row ${index + 2}: invalid lifecycle`);
+      if (
+        row["Control Pillar"] &&
+        ![
+          "ICE Controls",
+          "Sustainability Controls",
+          "Operating Controls",
+        ].includes(row["Control Pillar"])
+      )
+        errors.push(`Row ${index + 2}: invalid control pillar`);
+      if (row["Due Date"] && !isDate(row["Due Date"]))
+        errors.push(`Row ${index + 2}: use YYYY-MM-DD for due date`);
+      for (const [field, max] of [
+        ["Deadline Week", 53],
+        ["Deadline Day", 7],
+      ] as const)
+        if (
+          row[field] &&
+          (!Number.isInteger(Number(row[field])) ||
+            Number(row[field]) < 1 ||
+            Number(row[field]) > max)
+        )
+          errors.push(
+            `Row ${index + 2}: ${field} must be between 1 and ${max}`,
+          );
+      const existing = controls.find((c) => c.id === id);
+      if (
+        existing &&
+        row["Control Owner"] &&
+        existing.owner !== row["Control Owner"] &&
+        (existing.status === "Certified" || existing.reassignmentRequested)
+      )
+        errors.push(
+          `Row ${index + 2}: certified or pending-reassignment ownership cannot be replaced by import`,
+        );
+
       if (seen.has(id))
         errors.push(
           `Row ${index + 2}: duplicate control instance (${controlNumber}, ${countryValue}, ${unitValue})`,
@@ -3213,7 +3526,9 @@ function AdminSetup({
         );
     });
     const parsedRows = rows.map((cells) =>
-      Object.fromEntries(headers.map((header, index) => [header, cells[index]])),
+      Object.fromEntries(
+        headers.map((header, index) => [header, cells[index]]),
+      ),
     );
     const matchedUpdates = parsedRows.filter((row) =>
       controls.some(
@@ -3299,18 +3614,12 @@ function AdminSetup({
           : "Not required"
         : current?.evidenceRequirement || "Not scoped";
       const lifecycleValue = row["Lifecycle"]?.trim();
-      const lifecycle =
-        lifecycleValue === "Archived" || lifecycleValue === "Not applicable"
-          ? lifecycleValue
-          : current?.lifecycle || "Active";
+      const lifecycle = (lifecycleValue ||
+        current?.lifecycle ||
+        "Active") as InventoryControl["lifecycle"];
       return normalizeControl({
         ...(current || ({} as InventoryControl)),
-        id: makeInstanceId(
-          controlNumber,
-          regionValue,
-          countryValue,
-          unitValue,
-        ),
+        id: makeInstanceId(controlNumber, regionValue, countryValue, unitValue),
         controlNumber,
         pillar:
           row["Control Pillar"] === "Sustainability Controls"
@@ -3325,12 +3634,17 @@ function AdminSetup({
         objective: row["Control Objective"] || current?.objective || "",
         riskDescription:
           row["Risk Description"] || current?.riskDescription || "",
-        description:
-          row["Control Description"] || current?.description || "",
-        instructions:
-          row["Control Description"] || current?.instructions || "",
-        frequency:
-          row["Control Frequency"] || current?.frequency || "Periodic",
+        description: row["Control Description"] || current?.description || "",
+        instructions: row["Unit Instructions"] || current?.instructions || "",
+        regionalInstructions:
+          row["Regional Instructions"] || current?.regionalInstructions || "",
+        dueWeek: row["Deadline Week"]
+          ? Number(row["Deadline Week"])
+          : current?.dueWeek,
+        dueDay: row["Deadline Day"]
+          ? Number(row["Deadline Day"])
+          : current?.dueDay,
+        frequency: row["Control Frequency"] || current?.frequency || "Periodic",
         attestationFrequency,
         type: row["Control Type"] || current?.type || "Manual",
         nature:
@@ -3375,7 +3689,18 @@ function AdminSetup({
       const row = imported.get(control.id);
       if (!row) return control;
       imported.delete(control.id);
-      return fromRow(row, control);
+      const importedControl = fromRow(row, control);
+      if (importedControl.owner !== control.owner)
+        Object.assign(
+          importedControl,
+          assignmentReset(control, importedControl.owner),
+        );
+      appendAudit(
+        control.id,
+        "Validated import applied",
+        "Requirement metadata updated; prior execution, evidence and audit history retained",
+      );
+      return importedControl;
     });
     const added = Array.from(imported.values()).map((row) => fromRow(row));
     setControls([...existing, ...added]);
@@ -3448,6 +3773,8 @@ function AdminSetup({
           "Control requirements",
           "Ownership",
           "Reminders",
+          "Calendar",
+          "Test data",
         ].map((item) => (
           <button
             className={tab === item ? "active" : ""}
@@ -3458,6 +3785,13 @@ function AdminSetup({
           </button>
         ))}
       </div>
+      {tab === "Calendar" && <CalendarSetup notify={notify} />}
+      {tab === "Test data" && (
+        <>
+          <TestDirectory notify={notify} />
+          <BackupPanel notify={notify} />
+        </>
+      )}
       {tab === "Scope & structure" && (
         <div className="admin-grid">
           <article className="panel setup-card">
@@ -3646,9 +3980,8 @@ function AdminSetup({
             <span>
               <strong>
                 {
-                  controls.filter(
-                    (c) => c.evidenceRequirement !== "Not scoped",
-                  ).length
+                  controls.filter((c) => c.evidenceRequirement !== "Not scoped")
+                    .length
                 }
               </strong>{" "}
               evidence rules scoped
@@ -3774,152 +4107,147 @@ function AdminSetup({
         </>
       )}
       {tab === "Ownership" && (
-        <div className="admin-grid">
-          <article className="panel setup-card">
-            <div className="panel-heading">
-              <div>
-                <span className="section-kicker">Assignment health</span>
-                <h2>Control Owner coverage</h2>
-              </div>
-            </div>
-            <div className="ownership-chart">
-              <div>
-                <span>Assigned</span>
-                <strong>{assigned}</strong>
-                <i
-                  style={{ width: `${(assigned / controls.length) * 100}%` }}
-                />
-              </div>
-              <div>
-                <span>Certified</span>
-                <strong>
-                  {controls.filter((c) => c.status === "Certified").length}
-                </strong>
-                <i
-                  style={{
-                    width: `${(controls.filter((c) => c.status === "Certified").length / controls.length) * 100}%`,
-                  }}
-                />
-              </div>
-              <div>
-                <span>Unassigned</span>
-                <strong>{controls.length - assigned}</strong>
-                <i
-                  style={{
-                    width: `${((controls.length - assigned) / controls.length) * 100}%`,
-                  }}
-                />
-              </div>
-            </div>
-            <button
-              className="wide-secondary"
-              onClick={() => setActiveNav("Reports")}
-            >
-              Open ownership gap report
-            </button>
-          </article>
-          <article className="panel setup-card">
-            <div className="panel-heading">
-              <div>
-                <span className="section-kicker">Quick assignment</span>
-                <h2>Unassigned controls</h2>
-              </div>
-            </div>
-            {controls
-              .filter((c) => c.owner === "Unassigned")
-              .slice(0, 5)
-              .map((control) => (
-                <div className="change-row" key={control.id}>
-                  <span>{control.id}</span>
-                  <strong>{control.name}</strong>
-                  <button onClick={() => openControl(control)}>Assign →</button>
+        <>
+          <BulkOwnership
+            controls={controls}
+            notify={notify}
+            assign={(ids, owner) => {
+              const targets = controls.filter(
+                (c) => ids.includes(c.id) && c.owner !== owner,
+              );
+              if (
+                targets.some(
+                  (c) => c.status === "Certified" || c.reassignmentRequested,
+                )
+              )
+                return notify(
+                  "Selection includes a certified control or pending reassignment. Resolve these individually first.",
+                );
+              targets.forEach((c) => {
+                updateControl(c.id, assignmentReset(c, owner));
+                appendAudit(
+                  c.id,
+                  "Bulk owner assignment",
+                  `${c.owner} → ${owner}. Ownership acknowledgement reset; prior execution and evidence retained.`,
+                );
+              });
+              notify(
+                `${targets.length} assignments updated for ${period} and future default ownership`,
+              );
+            }}
+            shareDtp={(ids, source) => {
+              controls
+                .filter((c) => ids.includes(c.id))
+                .forEach((c) => {
+                  updateControl(c.id, {
+                    dtpDocument: source.dtpDocument,
+                    dtpSummary: source.dtpSummary,
+                    dtpVersion: source.dtpVersion,
+                    dtpOwner: source.dtpOwner,
+                    dtpLastReviewed: "",
+                    dtpNextReview: source.dtpNextReview,
+                    dtpStatus: "Needs review",
+                    documentationReviewed: false,
+                    documentationReviewedAt: undefined,
+                    dtpHistory:
+                      c.dtpDocument || c.dtpSummary
+                        ? [
+                            {
+                              document: c.dtpDocument,
+                              summary: c.dtpSummary,
+                              version: c.dtpVersion,
+                              owner: c.dtpOwner,
+                              reviewedAt: c.dtpLastReviewed,
+                            },
+                            ...c.dtpHistory,
+                          ]
+                        : c.dtpHistory,
+                  });
+                  appendAudit(
+                    c.id,
+                    "DTP snapshot reused",
+                    `Source ${source.id}; local confirmation required. Prior versions retained.`,
+                  );
+                });
+              notify(
+                `${ids.length} guidance snapshots saved; unit execution remains separate`,
+              );
+            }}
+          />
+          <div className="admin-grid">
+            <article className="panel setup-card">
+              <div className="panel-heading">
+                <div>
+                  <span className="section-kicker">Assignment health</span>
+                  <h2>Control Owner coverage</h2>
                 </div>
-              ))}
-          </article>
-        </div>
+              </div>
+              <div className="ownership-chart">
+                <div>
+                  <span>Assigned</span>
+                  <strong>{assigned}</strong>
+                  <i
+                    style={{ width: `${(assigned / controls.length) * 100}%` }}
+                  />
+                </div>
+                <div>
+                  <span>Certified</span>
+                  <strong>
+                    {controls.filter((c) => c.status === "Certified").length}
+                  </strong>
+                  <i
+                    style={{
+                      width: `${(controls.filter((c) => c.status === "Certified").length / controls.length) * 100}%`,
+                    }}
+                  />
+                </div>
+                <div>
+                  <span>Unassigned</span>
+                  <strong>{controls.length - assigned}</strong>
+                  <i
+                    style={{
+                      width: `${((controls.length - assigned) / controls.length) * 100}%`,
+                    }}
+                  />
+                </div>
+              </div>
+              <button
+                className="wide-secondary"
+                onClick={() => setActiveNav("Reports")}
+              >
+                Open ownership gap report
+              </button>
+            </article>
+            <article className="panel setup-card">
+              <div className="panel-heading">
+                <div>
+                  <span className="section-kicker">Quick assignment</span>
+                  <h2>Unassigned controls</h2>
+                </div>
+              </div>
+              {controls
+                .filter((c) => c.owner === "Unassigned")
+                .slice(0, 5)
+                .map((control) => (
+                  <div className="change-row" key={control.id}>
+                    <span>{control.id}</span>
+                    <strong>{control.name}</strong>
+                    <button onClick={() => openControl(control)}>
+                      Assign →
+                    </button>
+                  </div>
+                ))}
+            </article>
+          </div>
+        </>
       )}
       {tab === "Reminders" && (
-        <div className="admin-grid">
-          <article className="panel setup-card">
-            <div className="panel-heading">
-              <div>
-                <span className="section-kicker">Simulation</span>
-                <h2>Reminder sequence</h2>
-              </div>
-              <span className="draft-badge">MVP workflow</span>
-            </div>
-            <label className="reminder-sender">
-              Reminder sender
-              <select
-                value={reminderSender}
-                onChange={(event) => setReminderSender(event.target.value)}
-              >
-                <option value={CURRENT_USER}>{CURRENT_USER} · Controller</option>
-              </select>
-              <small>
-                Enterprise delivery will use the signed-in Controller identity.
-              </small>
-            </label>
-            {[
-              ["7 days before", "Friendly heads-up"],
-              ["3 days before", "Action reminder"],
-              ["On due date", "Due today"],
-              ["1 day overdue", "Owner + Controller Admin"],
-            ].map(([timing, label], index) => (
-              <div className="reminder-rule" key={timing}>
-                <span>{index + 1}</span>
-                <div>
-                  <strong>{label}</strong>
-                  <small>{timing} · Includes direct ICEbreaker link</small>
-                </div>
-                <label className="toggle-label">
-                  <input type="checkbox" defaultChecked />
-                  <span />
-                </label>
-              </div>
-            ))}
-            <button
-              className="wide-secondary"
-              onClick={() => {
-                const entry = `Simulated reminder from ${reminderSender} generated at ${new Date().toLocaleTimeString()}`;
-                setReminderLog(entry);
-                notify(entry);
-              }}
-            >
-              Generate simulated email preview
-            </button>
-          </article>
-          <article className="panel email-preview">
-            <div className="email-head">
-              <span>M</span>
-              <div>
-                <strong>ICEbreaker reminder</strong>
-                <small>From: {reminderSender} via ICEbreaker</small>
-                <small>To: Assigned Control Owner</small>
-              </div>
-            </div>
-            <p>Your control certification is approaching its due date.</p>
-            <div>
-              <strong>Open ICEbreaker to review the requirement</strong>
-              <small>Ownership · Instructions · Evidence · Certification</small>
-            </div>
-            <button onClick={() => notify("Preview link validated")}>
-              Open control link
-            </button>
-            <small>
-              {reminderLog ||
-                "Generate a preview to record a simulated reminder."}
-            </small>
-            <div className="email-scope-note">
-              <strong>MVP behavior: no email is sent.</strong>
-              <small>
-                This public build creates an on-screen preview only. The
-                enterprise target sends on behalf of the signed-in Controller
-                through Microsoft Graph after identity and delivery approval.
-              </small>
-            </div>
-          </article>
-        </div>
+        <ReminderSetup
+          controls={scheduledControls}
+          period={period}
+          openControl={openControl}
+          notify={notify}
+        />
       )}
     </section>
   );
@@ -3975,7 +4303,12 @@ function ControlDrawer({
   const [documentationReviewed, setDocumentationReviewed] = useState(
     control.documentationReviewed || false,
   );
-  const [dtpOpened, setDtpOpened] = useState(false);
+  const {
+    state: phase1,
+    setState: setPhase1,
+    currentUser: CURRENT_USER,
+  } = usePhase1();
+  const [uploadBusy, setUploadBusy] = useState(false);
   const [progressSaved, setProgressSaved] = useState(
     Boolean(control.draftSavedAt),
   );
@@ -3986,9 +4319,9 @@ function ControlDrawer({
   const [handover, setHandover] = useState(false);
   const [training, setTraining] = useState(false);
   const [evidenceLink, setEvidenceLink] = useState("");
-  const [requestModal, setRequestModal] = useState<
-    "gap" | "guidance" | null
-  >(null);
+  const [requestModal, setRequestModal] = useState<"gap" | "guidance" | null>(
+    null,
+  );
   const [showDtpPreview, setShowDtpPreview] = useState(false);
   const [gapRequest, setGapRequest] = useState({
     title: "",
@@ -4004,6 +4337,22 @@ function ControlDrawer({
   });
   const saveAdmin = () => {
     const assignmentChanged = draft.owner !== control.owner;
+    if (
+      assignmentChanged &&
+      (control.status === "Certified" || control.reassignmentRequested)
+    ) {
+      notify(
+        "Certified ownership is retained. Pending reassignments must use Approve or Keep current owner.",
+      );
+      return;
+    }
+    if (
+      draft.owner !== "Unassigned" &&
+      !phase1.people.some((p) => p.name === draft.owner) &&
+      assignmentChanged
+    )
+      return notify("Choose a configured test account");
+
     const changedFields = (
       [
         ["Control name", "name"],
@@ -4026,22 +4375,50 @@ function ControlDrawer({
     )
       .filter(([, field]) => draft[field] !== control[field])
       .map(([label]) => label);
-    const status: ControlStatus =
-      draft.owner === "Unassigned"
-        ? "Unassigned"
-        : draft.status === "Unassigned"
-          ? "Acknowledgement pending"
-          : draft.status;
+    const requirementKeys: (keyof InventoryControl)[] = [
+      "name",
+      "pillar",
+      "country",
+      "businessProcess",
+      "process",
+      "frequency",
+      "attestationFrequency",
+      "keyControl",
+      "fraudControl",
+      "owner",
+      "site",
+      "unit",
+      "dueWeek",
+      "dueDay",
+      "evidenceRequirement",
+      "evidenceRequired",
+      "lifecycle",
+      "applicable",
+      "instructions",
+      "regionalInstructions",
+    ];
+    const requirementChanges = Object.fromEntries(
+      requirementKeys.map((key) => [key, draft[key]]),
+    );
     updateControl(control.id, {
-      ...draft,
-      status,
-      reassignmentRequested:
-        assignmentChanged ? false : draft.reassignmentRequested,
+      ...requirementChanges,
+      due:
+        (draft.dueWeek !== control.dueWeek ||
+          draft.dueDay !== control.dueDay) &&
+        draft.due === control.due
+          ? scheduledDue(
+              draft,
+              phase1.calendar.find((p) => p.id === period),
+            )
+          : draft.due,
+      ...(assignmentChanged ? assignmentReset(control, draft.owner) : {}),
     });
     if (assignmentChanged && control.reassignmentRequested) {
       setOwnershipChanges((current) =>
         current.map((change) =>
-          change.controlId === control.id && change.status === "Requested"
+          change.controlId === control.id &&
+          change.period === period &&
+          change.status === "Requested"
             ? { ...change, toOwner: draft.owner, status: "Completed" }
             : change,
         ),
@@ -4061,6 +4438,17 @@ function ControlDrawer({
   const reassign = () => {
     if (draft.owner !== CURRENT_USER) {
       notify("Only the assigned Control Owner can request reassignment");
+      return;
+    }
+    if (control.status === "Certified" || control.reassignmentRequested) {
+      notify("This execution is certified or already has a pending request");
+      return;
+    }
+    if (
+      newOwner === CURRENT_USER ||
+      !phase1.people.some((p) => p.name === newOwner)
+    ) {
+      notify("Choose a different configured test account");
       return;
     }
     if (!newOwner.trim() || !handover || !training) {
@@ -4085,20 +4473,73 @@ function ControlDrawer({
     appendAudit(
       control.id,
       "Reassignment requested",
-      `${change.fromOwner} requested ${change.toOwner}; handover and training readiness confirmed`,
+      `${change.fromOwner} requested ${change.toOwner}; handover and training completed`,
     );
     notify(
       `${controlCode(control)} reassignment request sent to the Controller team`,
     );
     setShowReassign(false);
   };
+  const approveReassignment = () => {
+    const request = ownershipChanges.find(
+      (r) =>
+        r.controlId === control.id &&
+        r.period === period &&
+        r.status === "Requested",
+    );
+    if (
+      !request ||
+      !request.handoverConfirmed ||
+      !request.trainingConfirmed ||
+      !phase1.people.some((p) => p.name === request.toOwner)
+    )
+      return notify(
+        "A valid request with completed handover/training and a test owner is required",
+      );
+    if (control.status === "Certified")
+      return notify(
+        "Certified executions cannot change owner; choose a new period",
+      );
+    const changes = assignmentReset(control, request.toOwner);
+    updateControl(control.id, changes);
+    setDraft({ ...draft, ...changes });
+    setOwnershipChanges((rows) =>
+      rows.map((r) =>
+        r.id === request.id
+          ? {
+              ...r,
+              status: "Completed",
+              reviewedBy: CURRENT_USER,
+              reviewedAt: new Date().toISOString(),
+              decisionNote: "Approved after completed handover and training",
+            }
+          : r,
+      ),
+    );
+    appendAudit(
+      control.id,
+      "Reassignment approved",
+      `${request.fromOwner} → ${request.toOwner}. New owner must acknowledge; prior work retained.`,
+    );
+    notify(
+      "Reassignment approved. Switch to the new test account to acknowledge.",
+    );
+  };
   const resolveReassignmentRequest = () => {
     updateControl(control.id, { reassignmentRequested: false });
     setDraft({ ...draft, reassignmentRequested: false });
     setOwnershipChanges((current) =>
       current.map((change) =>
-        change.controlId === control.id && change.status === "Requested"
-          ? { ...change, status: "Resolved" }
+        change.controlId === control.id &&
+        change.period === period &&
+        change.status === "Requested"
+          ? {
+              ...change,
+              status: "Resolved",
+              reviewedBy: CURRENT_USER,
+              reviewedAt: new Date().toISOString(),
+              decisionNote: "Retained current owner",
+            }
           : change,
       ),
     );
@@ -4110,8 +4551,12 @@ function ControlDrawer({
     notify(`${controlCode(control)} reassignment request resolved`);
   };
   const saveAcknowledgement = () => {
+    if (control.status === "Certified")
+      return notify("Certified execution is read-only. Select a new period.");
     if (draft.owner !== CURRENT_USER) {
-      notify("This control is read-only because it is not assigned to Demo Account");
+      notify(
+        "This control is read-only because it is not assigned to the active test account",
+      );
       return;
     }
     if (!accepted || !understood) {
@@ -4134,6 +4579,8 @@ function ControlDrawer({
     notify(`${controlCode(control)} ownership acknowledgement saved`);
   };
   const saveProgress = () => {
+    if (control.status === "Certified")
+      return notify("Certified execution is read-only. Select a new period.");
     if (draft.owner !== CURRENT_USER) {
       notify("Only the assigned Control Owner can save an execution draft");
       return;
@@ -4167,13 +4614,17 @@ function ControlDrawer({
     notify(`${controlCode(control)} draft saved for Controller visibility`);
   };
   const attachEvidenceLink = () => {
+    if (control.status === "Certified")
+      return notify("Certified evidence is retained. Select a new period.");
     if (draft.owner !== CURRENT_USER) {
       notify("Only the assigned Control Owner can add period evidence");
       return;
     }
     const link = evidenceLink.trim();
     if (!/^https?:\/\//i.test(link)) {
-      notify("Paste a complete SharePoint or evidence URL beginning with https://");
+      notify(
+        "Paste a complete SharePoint or evidence URL beginning with https://",
+      );
       return;
     }
     addAttachment(link);
@@ -4189,17 +4640,23 @@ function ControlDrawer({
       draft.owner !== CURRENT_USER &&
       draft.dtpOwner !== CURRENT_USER
     ) {
-      notify("Only the assigned Control Owner or procedure owner can maintain this DTP");
+      notify(
+        "Only the assigned Control Owner or procedure owner can maintain this DTP",
+      );
       return;
     }
     const changedVersion =
-      Boolean(control.dtpDocument || control.dtpVersion) &&
+      Boolean(
+        control.dtpDocument || control.dtpSummary || control.dtpVersion,
+      ) &&
       (control.dtpDocument !== nextDraft.dtpDocument ||
+        control.dtpSummary !== nextDraft.dtpSummary ||
         control.dtpVersion !== nextDraft.dtpVersion);
     const dtpHistory = changedVersion
       ? [
           {
             document: control.dtpDocument || "Inline procedure",
+            summary: control.dtpSummary,
             version: control.dtpVersion || "Unversioned",
             owner: control.dtpOwner || "Unassigned",
             reviewedAt: control.dtpLastReviewed || "Not recorded",
@@ -4224,8 +4681,16 @@ function ControlDrawer({
       dtpDocument: nextDraft.dtpDocument,
       dtpStatus,
       dtpHistory,
-      documentationReviewed: false,
-      documentationReviewedAt: undefined,
+      ...(control.status === "Certified"
+        ? {}
+        : {
+            documentationReviewed:
+              confirmCurrent && draft.owner === CURRENT_USER,
+            documentationReviewedAt:
+              confirmCurrent && draft.owner === CURRENT_USER
+                ? new Date().toISOString()
+                : undefined,
+          }),
     });
     appendAudit(
       control.id,
@@ -4233,22 +4698,22 @@ function ControlDrawer({
       `${nextDraft.dtpDocument || "Inline procedure"} · ${nextDraft.dtpVersion || "No version"}`,
     );
     setDraft({ ...nextDraft, dtpStatus, dtpHistory });
-    setDocumentationReviewed(false);
-    setDtpOpened(false);
+    setDocumentationReviewed(confirmCurrent && draft.owner === CURRENT_USER);
     setProgressSaved(false);
     notify(`${controlCode(control)} DTP guidance saved`);
   };
   const confirmDtpCurrent = () => {
     if (!draft.dtpSummary.trim() && !draft.dtpDocument) {
-      notify("Add procedure steps or attach a document before confirming current");
+      notify(
+        "Add procedure steps or attach a document before confirming current",
+      );
       return;
     }
     const nextDraft: InventoryControl = {
       ...draft,
       dtpStatus: "Current",
       dtpLastReviewed: new Date().toISOString().slice(0, 10),
-      dtpOwner:
-        draft.dtpOwner === "Unassigned" ? CURRENT_USER : draft.dtpOwner,
+      dtpOwner: draft.dtpOwner === "Unassigned" ? CURRENT_USER : draft.dtpOwner,
     };
     saveDtp(nextDraft, true);
     appendAudit(
@@ -4298,6 +4763,24 @@ function ControlDrawer({
       notify("Describe the guidance you need");
       return;
     }
+    setPhase1((s) => ({
+      ...s,
+      guidance: [
+        {
+          id: crypto.randomUUID(),
+          controlId: control.id,
+          period,
+          owner: CURRENT_USER,
+          topic: guidanceRequest.topic,
+          urgency: guidanceRequest.urgency,
+          question: guidanceRequest.question.trim(),
+          createdAt: new Date().toISOString(),
+          status: "Open",
+          messages: [],
+        },
+        ...s.guidance,
+      ],
+    }));
     appendAudit(
       control.id,
       "Guidance requested",
@@ -4305,9 +4788,12 @@ function ControlDrawer({
     );
     setRequestModal(null);
     setGuidanceRequest({ ...guidanceRequest, question: "" });
-    notify("Guidance request submitted to the Controller team");
+    notify(
+      "Request saved. Open Guidance requests to track replies; switch to Controller Admin to respond.",
+    );
   };
   const isAssignedOwner = draft.owner === CURRENT_USER;
+  const canExecute = isAssignedOwner && draft.status !== "Certified";
   const canMaintainDtp =
     role === "Controller Admin" ||
     isAssignedOwner ||
@@ -4316,7 +4802,9 @@ function ControlDrawer({
     draft.lifecycle !== "Active"
       ? `This control is ${draft.lifecycle.toLowerCase()} for this scope.`
       : "",
-    !isAssignedOwner ? "This control is not assigned to Demo Account." : "",
+    !isAssignedOwner
+      ? "This control is not assigned to the active test account."
+      : "",
     !acknowledgementSaved ? "Save the ownership acknowledgement." : "",
     !progressSaved ? "Save the latest execution draft." : "",
     draft.reassignmentRequested
@@ -4341,6 +4829,157 @@ function ControlDrawer({
       ? "Attach the required execution evidence."
       : "",
   ].filter(Boolean);
+  const dtpEditor = canMaintainDtp ? (
+    <section className="owner-dtp-maintenance">
+      <div className="owner-dtp-heading">
+        <div>
+          <span className="section-kicker">Procedure ownership</span>
+          <h3>Maintain desktop procedure</h3>
+        </div>
+        <span
+          className={`dtp-state ${draft.dtpStatus.toLowerCase().replaceAll(" ", "-")}`}
+        >
+          {draft.dtpStatus}
+        </span>
+      </div>
+      <p>
+        Keep the working steps, owner, version and review dates up to date.
+        Replacing a file preserves the prior version in history.
+      </p>
+      <label className="dtp-procedure-field">
+        Procedure steps
+        <textarea
+          rows={6}
+          aria-label="Procedure steps"
+          value={draft.dtpSummary}
+          onChange={(e) => setDraft({ ...draft, dtpSummary: e.target.value })}
+        />
+      </label>
+      <div className="dtp-meta-grid">
+        <label>
+          Version
+          <input
+            value={draft.dtpVersion}
+            onChange={(e) => setDraft({ ...draft, dtpVersion: e.target.value })}
+          />
+        </label>
+        <label>
+          Procedure owner
+          <input
+            value={draft.dtpOwner}
+            onChange={(e) => setDraft({ ...draft, dtpOwner: e.target.value })}
+          />
+        </label>
+        <label>
+          Procedure last reviewed
+          <input
+            type="date"
+            value={draft.dtpLastReviewed}
+            onChange={(e) =>
+              setDraft({
+                ...draft,
+                dtpLastReviewed: e.target.value,
+              })
+            }
+          />
+        </label>
+        <label>
+          Next review
+          <input
+            type="date"
+            value={draft.dtpNextReview}
+            onChange={(e) =>
+              setDraft({
+                ...draft,
+                dtpNextReview: e.target.value,
+              })
+            }
+          />
+        </label>
+      </div>
+      <label className="dtp-reference-field">
+        Document or SharePoint reference
+        <input
+          value={fileLabel(draft.dtpDocument)}
+          onChange={(e) => setDraft({ ...draft, dtpDocument: e.target.value })}
+          placeholder="Filename or https://..."
+        />
+        <small>Paste a governed URL or attach a local file below.</small>
+      </label>
+      <label className="guidance-card file-card dtp-upload">
+        <span>▤</span>
+        <span>
+          <strong>
+            {fileLabel(draft.dtpDocument) || "Attach a desktop procedure"}
+          </strong>
+          <small>Actual file stored in this browser · maximum 20 MB</small>
+        </span>
+        <b>+</b>
+        <input
+          type="file"
+          disabled={uploadBusy}
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (!file) return;
+            setUploadBusy(true);
+            try {
+              const ref = await storeLocalFile(file);
+              setDraft((d) => ({
+                ...d,
+                dtpDocument: ref,
+                dtpStatus: "Needs review",
+                dtpOwner:
+                  d.dtpOwner === "Unassigned" ? CURRENT_USER : d.dtpOwner,
+              }));
+              notify(
+                "File stored locally. Save the procedure to attach it to this control.",
+              );
+            } catch (error) {
+              notify(error instanceof Error ? error.message : "Upload failed");
+            }
+            setUploadBusy(false);
+          }}
+        />
+      </label>
+      <div className="dtp-actions owner-dtp-actions">
+        <button
+          className="secondary-button owner-dtp-save"
+          disabled={uploadBusy}
+          onClick={() => saveDtp()}
+        >
+          Save procedure draft
+        </button>
+        <button
+          className="primary-button owner-dtp-save"
+          disabled={uploadBusy}
+          onClick={confirmDtpCurrent}
+        >
+          Confirm procedure current
+        </button>
+      </div>
+      {draft.dtpHistory.length > 0 && (
+        <div className="dtp-history">
+          <strong>Version history</strong>
+          {draft.dtpHistory.slice(0, 5).map((item, index) => (
+            <span key={`${item.version}-${index}`}>
+              <LocalFileLink reference={item.document} />
+              {item.version} · {item.reviewedAt}
+              <p className="preserve-lines">{item.summary}</p>
+            </span>
+          ))}
+        </div>
+      )}
+    </section>
+  ) : (
+    <div className="dtp-permission-note">
+      <strong>Read-only procedure access</strong>
+      <span>
+        The assigned Control Owner or named procedure owner can maintain this
+        DTP. All Control Owners can read it.
+      </span>
+    </div>
+  );
   return (
     <>
       <button
@@ -4367,6 +5006,29 @@ function ControlDrawer({
               ? "Configure ownership, timing, evidence rules and guidance for this control."
               : "Accept ownership, follow the documented procedure and certify completion."}
           </p>
+          <details className="control-description" open>
+            <summary>Global control description</summary>
+            <p className="preserve-lines">
+              {draft.description || "Description not supplied"}
+            </p>
+          </details>
+          {draft.regionalInstructions && (
+            <div className="local-instructions">
+              <strong>Regional guidance</strong>
+              <p className="preserve-lines">{draft.regionalInstructions}</p>
+            </div>
+          )}
+          <div className="local-instructions">
+            <strong>Unit instructions</strong>
+            <p className="preserve-lines">
+              {draft.instructions || "No additional local instructions"}
+            </p>
+          </div>
+          <p className="field-note">
+            Execution frequency: how often the task is performed. Attestation
+            frequency: when the Owner confirms completion in ICEbreaker.
+            Controller testing is separate.
+          </p>
           <div className="detail-grid">
             <div>
               <span>Sub-process</span>
@@ -4383,9 +5045,7 @@ function ControlDrawer({
             </div>
             <div>
               <span>Evidence</span>
-              <strong>
-                {evidenceLabel(draft)}
-              </strong>
+              <strong>{evidenceLabel(draft)}</strong>
             </div>
             <div>
               <span>Control type</span>
@@ -4411,24 +5071,30 @@ function ControlDrawer({
               <strong>{workflowStage(draft, attachments)}</strong>
             </div>
           </div>
-          {role === "Control Owner" && derivedStatus(draft, attachments) === "Overdue" && (
-            <div className="owner-overdue-alert">
-              <span>!</span>
-              <div>
-                <strong>This control is overdue</strong>
-                <p>
-                  It was due {draft.due}. Save a draft now if work is underway,
-                  or ask the Controller team for guidance if execution is
-                  blocked.
-                </p>
+          {role === "Control Owner" &&
+            derivedStatus(draft, attachments) === "Overdue" && (
+              <div className="owner-overdue-alert">
+                <span>!</span>
+                <div>
+                  <strong>This control is overdue</strong>
+                  <p>
+                    It was due {draft.due}. Save a draft now if work is
+                    underway, or ask the Controller team for guidance if
+                    execution is blocked.
+                  </p>
+                </div>
               </div>
-            </div>
-          )}
+            )}
           {role === "Control Owner" && (
             <nav className="owner-task-tabs" aria-label="Control Owner tasks">
               {(
                 [
-                  ["ownership", "1", "Ownership", acknowledgementSaved ? "Saved" : "Action needed"],
+                  [
+                    "ownership",
+                    "1",
+                    "Ownership",
+                    acknowledgementSaved ? "Saved" : "Action needed",
+                  ],
                   ["procedure", "2", "Procedure & execution", draft.dtpStatus],
                   [
                     "support",
@@ -4461,7 +5127,9 @@ function ControlDrawer({
                     <span className="section-kicker">Current period</span>
                     <h3>Owner progress & exceptions</h3>
                   </div>
-                  <span className={`status ${statusClass[derivedStatus(draft)]}`}>
+                  <span
+                    className={`status ${statusClass[derivedStatus(draft)]}`}
+                  >
                     <i />
                     {workflowStage(draft)}
                   </span>
@@ -4473,7 +5141,9 @@ function ControlDrawer({
                   </div>
                   <div>
                     <span>Understanding</span>
-                    <strong>{draft.understood ? "Confirmed" : "Pending"}</strong>
+                    <strong>
+                      {draft.understood ? "Confirmed" : "Pending"}
+                    </strong>
                   </div>
                   <div>
                     <span>Execution</span>
@@ -4512,9 +5182,24 @@ function ControlDrawer({
                       <strong>Owner requested reassignment</strong>
                       <p>
                         Review the ownership activity in Reports. Update the
-                        owner where appropriate, or retain the current owner
-                        and resolve the request here.
+                        owner where appropriate, or retain the current owner and
+                        resolve the request here.
                       </p>
+                      <p>
+                        Requested owner:{" "}
+                        {ownershipChanges.find(
+                          (r) =>
+                            r.controlId === control.id &&
+                            r.period === period &&
+                            r.status === "Requested",
+                        )?.toOwner || "Review legacy request"}
+                      </p>
+                      <button
+                        className="primary-small"
+                        onClick={approveReassignment}
+                      >
+                        Approve reassignment
+                      </button>
                       <button
                         className="secondary-small"
                         onClick={resolveReassignmentRequest}
@@ -4625,29 +5310,14 @@ function ControlDrawer({
                     Fraud control
                   </label>
                 </div>
-                <label>
-                  Control Owner
-                  <select
-                    value={draft.owner}
-                    onChange={(e) =>
-                      setDraft({ ...draft, owner: e.target.value })
-                    }
-                  >
-                    <option value="Unassigned">Unassigned</option>
-                    {Array.from(
-                      new Set([
-                        ...DEMO_OWNERS,
-                        ...(draft.owner !== "Unassigned" ? [draft.owner] : []),
-                      ]),
-                    ).map((owner) => (
-                      <option key={owner}>{owner}</option>
-                    ))}
-                  </select>
-                  <small className="field-note">
-                    Prototype directory only. Demo Account is the only
-                    assignable user until enterprise identity is connected.
-                  </small>
-                </label>
+                <OwnerPicker
+                  value={draft.owner}
+                  onChange={(owner) => setDraft({ ...draft, owner })}
+                />
+                <ScheduleFields
+                  control={draft}
+                  change={(changes) => setDraft({ ...draft, ...changes })}
+                />
                 <label>
                   Unit / site
                   <select
@@ -4709,17 +5379,15 @@ function ControlDrawer({
                   Control lifecycle
                   <select
                     value={draft.lifecycle}
-                    onChange={(e) =>
-                      {
-                        const lifecycle = e.target
-                          .value as InventoryControl["lifecycle"];
-                        setDraft({
-                          ...draft,
-                          lifecycle,
-                          applicable: lifecycle === "Active",
-                        });
-                      }
-                    }
+                    onChange={(e) => {
+                      const lifecycle = e.target
+                        .value as InventoryControl["lifecycle"];
+                      setDraft({
+                        ...draft,
+                        lifecycle,
+                        applicable: lifecycle === "Active",
+                      });
+                    }}
                   >
                     <option>Active</option>
                     <option>Not applicable</option>
@@ -4731,7 +5399,7 @@ function ControlDrawer({
                   </small>
                 </label>
                 <label>
-                  Execution instructions
+                  Unit execution instructions
                   <textarea
                     value={draft.instructions}
                     placeholder="Add requirements, examples and what good looks like"
@@ -4740,38 +5408,38 @@ function ControlDrawer({
                     }
                   />
                 </label>
+                <label>
+                  Regional instructions
+                  <textarea
+                    rows={4}
+                    value={draft.regionalInstructions || ""}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        regionalInstructions: e.target.value,
+                      })
+                    }
+                  />
+                </label>
                 <details className="admin-detail-fields">
-                  <summary>Edit objective, risk and control description</summary>
+                  <summary>Global framework reference (read only)</summary>
                   <label>
                     Control objective
-                    <textarea
-                      value={draft.objective}
-                      onChange={(e) =>
-                        setDraft({ ...draft, objective: e.target.value })
-                      }
-                    />
+                    <textarea readOnly value={draft.objective} />
                   </label>
                   <label>
                     Risk description
-                    <textarea
-                      value={draft.riskDescription}
-                      onChange={(e) =>
-                        setDraft({
-                          ...draft,
-                          riskDescription: e.target.value,
-                        })
-                      }
-                    />
+                    <textarea readOnly value={draft.riskDescription} />
                   </label>
                   <label>
                     Control description
-                    <textarea
-                      value={draft.description}
-                      onChange={(e) =>
-                        setDraft({ ...draft, description: e.target.value })
-                      }
-                    />
+                    <textarea readOnly value={draft.description} />
                   </label>
+                  <p className="field-note">
+                    Global definitions are maintained through a validated
+                    Controller import. Use regional and unit instructions for
+                    local context.
+                  </p>
                 </details>
                 <div className="controller-correction-note">
                   <span>✓</span>
@@ -4786,13 +5454,16 @@ function ControlDrawer({
                 </div>
                 <button onClick={saveAdmin}>Save control requirements</button>
               </section>
+              <section className="drawer-section">{dtpEditor}</section>
               <section className="drawer-section controller-dtp-readout">
                 <div className="controller-readout-heading">
                   <div>
                     <span className="section-kicker">Desktop procedure</span>
                     <h3>Control Owner-managed DTP</h3>
                   </div>
-                  <span className={`dtp-state ${draft.dtpStatus.toLowerCase().replaceAll(" ", "-")}`}>
+                  <span
+                    className={`dtp-state ${draft.dtpStatus.toLowerCase().replaceAll(" ", "-")}`}
+                  >
                     {draft.dtpStatus}
                   </span>
                 </div>
@@ -4800,6 +5471,39 @@ function ControlDrawer({
                   The assigned Control Owner maintains and confirms the desktop
                   procedure. Controllers monitor status here and in Reports.
                 </p>
+                <LocalFileLink reference={draft.dtpDocument} />
+                <strong>Current-period evidence</strong>
+                {attachments.length ? (
+                  attachments.map((ref, i) => (
+                    <LocalFileLink key={i} reference={ref} />
+                  ))
+                ) : (
+                  <p>No evidence attached</p>
+                )}
+                <strong>Previous-period evidence</strong>
+                {previousEvidence.map((item, i) => (
+                  <div key={i}>
+                    <small>{item.period}</small>
+                    <LocalFileLink reference={item.file} />
+                  </div>
+                ))}
+                <button
+                  className="secondary-small"
+                  onClick={() => {
+                    updateControl(control.id, {
+                      due: draft.due,
+                      activatedPeriods: Array.from(
+                        new Set([...(draft.activatedPeriods || []), period]),
+                      ),
+                    });
+                    notify(
+                      "Control activated for this period. It will appear in the assigned Owner queue.",
+                    );
+                  }}
+                >
+                  Activate this control for selected period
+                </button>
+
                 <div className="procedure-review-meta">
                   <span>
                     <small>Procedure owner</small>
@@ -4824,567 +5528,468 @@ function ControlDrawer({
                   <div>
                     <strong>Library preview · read-only</strong>
                     <p>
-                      This control is not assigned to Demo Account. You can
-                      review its requirement and DTP, but only the assigned
-                      owner can acknowledge, save execution or add evidence.
+                      This control is not assigned to the active test account.
+                      You can review its requirement and DTP, but only the
+                      assigned owner can acknowledge, save execution or add
+                      evidence.
                     </p>
                   </div>
                 </div>
               )}
               {ownerTask === "ownership" && (
-              <section className="drawer-section owner-task-panel">
-                <div>
-                  <span className="section-kicker">Required confirmations</span>
-                  <h3>Control Owner acknowledgement</h3>
-                </div>
-                <p className="acknowledgement-intro">
-                  Save this step now to record acceptance and understanding.
-                  You can close the control and return later to perform and
-                  certify it.
-                </p>
-                <label className="check-card">
-                  <input
-                    type="checkbox"
-                    checked={accepted}
-                    disabled={!isAssignedOwner}
-                    onChange={(e) => {
-                      setAccepted(e.target.checked);
-                      setAcknowledgementSaved(false);
-                    }}
-                  />
-                  <span>
-                    <strong>I confirm and accept ownership</strong>
-                    <small>
-                      I am accountable for this control for the period.
-                    </small>
-                  </span>
-                </label>
-                <label className="check-card">
-                  <input
-                    type="checkbox"
-                    checked={understood}
-                    disabled={!isAssignedOwner}
-                    onChange={(e) => {
-                      setUnderstood(e.target.checked);
-                      setAcknowledgementSaved(false);
-                    }}
-                  />
-                  <span>
-                    <strong>I understand the requirement</strong>
-                    <small>
-                      I reviewed the instructions and desktop procedure.
-                    </small>
-                  </span>
-                </label>
-                <div className="acknowledgement-actions">
-                  <button
-                    className="primary-button"
-                    disabled={
-                      !isAssignedOwner ||
-                      !accepted ||
-                      !understood ||
-                      acknowledgementSaved
-                    }
-                    onClick={saveAcknowledgement}
-                  >
-                    {acknowledgementSaved
-                      ? "Acknowledgement saved"
-                      : "Acknowledge & save"}
-                  </button>
-                  {acknowledgementSaved && acknowledgedAt && (
-                    <span className="acknowledgement-saved">
-                      ✓ Recorded {new Date(acknowledgedAt).toLocaleString()}
-                    </span>
-                  )}
-                </div>
-                {isAssignedOwner && <div className="ownership-decision">
+                <section className="drawer-section owner-task-panel">
                   <div>
-                    <strong>Is this control assigned correctly?</strong>
-                    <small>
-                      Continue when it is yours, or request a Controller-led
-                      reassignment without changing the live assignment.
-                    </small>
-                  </div>
-                  <button
-                    className="secondary-button"
-                    onClick={() => setShowReassign(!showReassign)}
-                  >
-                    {showReassign ? "Cancel request" : "Request reassignment"}
-                  </button>
-                </div>}
-                {draft.reassignmentRequested && (
-                  <div className="reassignment-requested">
-                    <strong>Reassignment request submitted</strong>
-                    <span>
-                      The Controller team can see the flag and ownership trail.
-                      You remain the assigned owner until they update it.
+                    <span className="section-kicker">
+                      Required confirmations
                     </span>
+                    <h3>Control Owner acknowledgement</h3>
                   </div>
-                )}
-                {isAssignedOwner && showReassign && (
-                  <div className="reassign-form owner-reassign-form">
-                    <label>
-                      Requested owner or team
-                      <input
-                        value={newOwner}
-                        onChange={(e) => setNewOwner(e.target.value)}
-                        placeholder="Name, role or team for Controller review"
-                      />
-                    </label>
-                    <label className="admin-check">
-                      <input
-                        type="checkbox"
-                        checked={handover}
-                        onChange={(e) => setHandover(e.target.checked)}
-                      />
-                      I will complete the responsibility handover
-                    </label>
-                    <label className="admin-check">
-                      <input
-                        type="checkbox"
-                        checked={training}
-                        onChange={(e) => setTraining(e.target.checked)}
-                      />
-                      I will ensure training and a procedure walkthrough occur
-                    </label>
-                    <button className="primary-button" onClick={reassign}>
-                      Submit reassignment request
-                    </button>
-                    <small>
-                      Prototype behavior: this creates a Controller-visible
-                      request; it does not assign a non-demo user.
-                    </small>
-                  </div>
-                )}
-              </section>
-              )}
-              {ownerTask === "procedure" && (
-              <section className="drawer-section owner-task-panel owner-procedure-tab">
-                <div className="procedure-section-heading">
-                  <span className="section-kicker">Documentation</span>
-                  <h3>Procedure & evidence</h3>
-                </div>
-                <div className="guidance-card">
-                  <span>▤</span>
-                  <span>
-                    <strong>
-                      {draft.dtpStatus === "Current"
-                        ? draft.dtpDocument || "Desktop procedure available"
-                        : "Desktop procedure not yet available"}
-                    </strong>
-                    <small>
-                      {draft.dtpStatus}
-                      {draft.dtpVersion ? ` · Version ${draft.dtpVersion}` : ""}
-                      {draft.dtpLastReviewed
-                        ? ` · Reviewed ${draft.dtpLastReviewed}`
-                        : ""}
-                    </small>
-                  </span>
-                </div>
-                <div className="procedure-review-meta">
-                  <span>
-                    <small>Procedure owner</small>
-                    <strong>{draft.dtpOwner || "Unassigned"}</strong>
-                  </span>
-                  <span>
-                    <small>Procedure last reviewed</small>
-                    <strong>{draft.dtpLastReviewed || "Not recorded"}</strong>
-                  </span>
-                  <span>
-                    <small>Your review confirmation</small>
-                    <strong>
-                      {control.documentationReviewedAt
-                        ? new Date(
-                            control.documentationReviewedAt,
-                          ).toLocaleString()
-                        : "Not confirmed"}
-                    </strong>
-                  </span>
-                </div>
-                {draft.dtpStatus === "Current" && (
-                  <button
-                    className="secondary-button dtp-open-button"
-                    onClick={() => {
-                      setDtpOpened(true);
-                      setShowDtpPreview(true);
-                    }}
-                  >
-                    Open desktop procedure
-                  </button>
-                )}
-                {draft.dtpSummary && (
-                  <p className="field-note">{draft.dtpSummary}</p>
-                )}
-                {draft.instructions && (
-                  <div className="fixed-scope">
-                    <span>Execution instructions</span>
-                    <strong>{draft.instructions}</strong>
-                  </div>
-                )}
-                {isAssignedOwner ? (
-                  <>
-                <label className="guidance-card file-card">
-                  <span>▱</span>
-                  <span>
-                    <strong>
-                      Add execution evidence · {evidenceLabel(draft)}
-                    </strong>
-                    <small>
-                      {attachments.length
-                        ? attachments.join(", ")
-                        : "No evidence attached"}
-                    </small>
-                  </span>
-                  <b>+</b>
-                  <input
-                    type="file"
-                    onChange={(e) => {
-                      if (e.target.files?.[0]) {
-                        addAttachment(e.target.files[0].name);
-                        notify(`${e.target.files[0].name} added as evidence`);
-                      }
-                    }}
-                  />
-                </label>
-                <div className="evidence-link-row">
-                  <label>
-                    SharePoint or evidence link
+                  <p className="acknowledgement-intro">
+                    Save this step now to record acceptance and understanding.
+                    You can close the control and return later to perform and
+                    certify it.
+                  </p>
+                  <label className="check-card">
                     <input
-                      type="url"
-                      value={evidenceLink}
-                      onChange={(e) => setEvidenceLink(e.target.value)}
-                      placeholder="https://..."
+                      type="checkbox"
+                      checked={accepted}
+                      disabled={!canExecute}
+                      onChange={(e) => {
+                        setAccepted(e.target.checked);
+                        setAcknowledgementSaved(false);
+                      }}
                     />
+                    <span>
+                      <strong>I confirm and accept ownership</strong>
+                      <small>
+                        I am accountable for this control for the period.
+                      </small>
+                    </span>
                   </label>
-                  <button
-                    className="secondary-button"
-                    onClick={attachEvidenceLink}
-                  >
-                    Add link
-                  </button>
-                </div>
-                {attachments.length > 0 && (
-                  <div className="current-evidence-list">
-                    <strong>Current-period evidence</strong>
-                    {attachments.map((item, index) =>
-                      /^https?:\/\//i.test(item) ? (
-                        <a
-                          key={`${item}-${index}`}
-                          href={item}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {item}
-                        </a>
-                      ) : (
-                        <span key={`${item}-${index}`}>{item}</span>
-                      ),
+                  <label className="check-card">
+                    <input
+                      type="checkbox"
+                      checked={understood}
+                      disabled={!canExecute}
+                      onChange={(e) => {
+                        setUnderstood(e.target.checked);
+                        setAcknowledgementSaved(false);
+                      }}
+                    />
+                    <span>
+                      <strong>I understand the requirement</strong>
+                      <small>
+                        I reviewed the instructions and desktop procedure.
+                      </small>
+                    </span>
+                  </label>
+                  <div className="acknowledgement-actions">
+                    <button
+                      className="primary-button"
+                      disabled={
+                        !canExecute ||
+                        !accepted ||
+                        !understood ||
+                        acknowledgementSaved
+                      }
+                      onClick={saveAcknowledgement}
+                    >
+                      {acknowledgementSaved
+                        ? "Acknowledgement saved"
+                        : "Acknowledge & save"}
+                    </button>
+                    {acknowledgementSaved && acknowledgedAt && (
+                      <span className="acknowledgement-saved">
+                        ✓ Recorded {new Date(acknowledgedAt).toLocaleString()}
+                      </span>
                     )}
                   </div>
-                )}
-                  </>
-                ) : (
-                  <div className="evidence-permission-note">
-                    <strong>Evidence is restricted to the assigned owner.</strong>
-                    <span>
-                      You can read this control and its DTP from the library,
-                      but only its assigned Control Owner can view or add
-                      period evidence.
-                    </span>
-                  </div>
-                )}
-                <section className="previous-evidence">
-                  <div className="previous-evidence-heading">
-                    <strong>Previous-period evidence</strong>
-                    <small>{previousEvidence.length} retained</small>
-                  </div>
-                  {previousEvidence.length ? (
-                    previousEvidence.slice(0, 8).map((item, index) => (
-                      <span key={`${item.period}-${item.file}-${index}`}>
-                        <strong>{item.file}</strong>
-                        <small>{item.period}</small>
+                  {isAssignedOwner && (
+                    <div className="ownership-decision">
+                      <div>
+                        <strong>Is this control assigned correctly?</strong>
+                        <small>
+                          Continue when it is yours, or request a Controller-led
+                          reassignment without changing the live assignment.
+                        </small>
+                      </div>
+                      <button
+                        className="secondary-button"
+                        onClick={() => setShowReassign(!showReassign)}
+                      >
+                        {showReassign
+                          ? "Cancel request"
+                          : "Request reassignment"}
+                      </button>
+                    </div>
+                  )}
+                  {draft.reassignmentRequested && (
+                    <div className="reassignment-requested">
+                      <strong>Reassignment request submitted</strong>
+                      <span>
+                        The Controller team can see the flag and ownership
+                        trail. You remain the assigned owner until they update
+                        it.
                       </span>
-                    ))
-                  ) : (
-                    <div className="previous-evidence-empty">
-                      No prior-period evidence is available for this control.
+                    </div>
+                  )}
+                  {isAssignedOwner && showReassign && (
+                    <div className="reassign-form owner-reassign-form">
+                      <label>
+                        Requested owner
+                        <OwnerPicker
+                          label="New Control Owner"
+                          value={newOwner}
+                          onChange={setNewOwner}
+                          allowUnassigned={false}
+                        />
+                      </label>
+                      <label className="admin-check">
+                        <input
+                          type="checkbox"
+                          checked={handover}
+                          onChange={(e) => setHandover(e.target.checked)}
+                        />
+                        I have completed the responsibility handover
+                      </label>
+                      <label className="admin-check">
+                        <input
+                          type="checkbox"
+                          checked={training}
+                          onChange={(e) => setTraining(e.target.checked)}
+                        />
+                        I have completed training and the procedure walkthrough
+                      </label>
+                      <button className="primary-button" onClick={reassign}>
+                        Submit reassignment request
+                      </button>
+                      <small>
+                        Prototype behavior: this creates a Controller-visible
+                        request; the new test account is assigned only after
+                        Controller approval.
+                      </small>
                     </div>
                   )}
                 </section>
-                <label className="check-card documentation-check">
-                  <input
-                    type="checkbox"
-                    checked={documentationReviewed}
-                    disabled={
-                      !isAssignedOwner ||
-                      draft.dtpStatus !== "Current" ||
-                      (!dtpOpened && !control.documentationReviewed)
-                    }
-                    onChange={(e) => {
-                      setDocumentationReviewed(e.target.checked);
-                      setProgressSaved(false);
-                    }}
-                  />
-                  <span>
-                    <strong>I reviewed the current desktop procedure</strong>
-                    <small>
-                      {draft.dtpStatus !== "Current"
-                        ? "A current DTP must be added before this confirmation is available."
-                        : "Open the current procedure above before recording your confirmation."}
-                    </small>
-                  </span>
-                </label>
-                <div className="execution-confirmation">
-                  <span className="section-kicker">Execution confirmation</span>
-                  <label className="outcome-field">
-                    Execution outcome
-                    <select
-                      value={executionOutcome}
-                      disabled={!isAssignedOwner}
-                      onChange={(e) => {
-                        setExecutionOutcome(e.target.value as ExecutionOutcome);
-                        setProgressSaved(false);
-                      }}
-                    >
-                      <option>Not recorded</option>
-                      <option>Performed as documented</option>
-                      <option>Performed with deviations</option>
-                      <option>Not performed</option>
-                    </select>
-                  </label>
-                  {executionOutcome === "Performed with deviations" && (
-                    <label className="outcome-field">
-                      Describe the deviation and immediate action
-                      <textarea
-                        rows={4}
-                        value={deviationNotes}
-                        disabled={!isAssignedOwner}
-                        onChange={(e) => {
-                          setDeviationNotes(e.target.value);
-                          setProgressSaved(false);
-                        }}
-                        placeholder="What differed from the procedure, what is the impact, and what action was taken?"
-                      />
-                    </label>
-                  )}
-                  <p className="field-note">
-                    Save at any point. Draft confirmations, outcomes and
-                    deviation notes become visible to Controllers without
-                    certifying the control.
-                  </p>
-                  <button
-                    className="secondary-button save-progress"
-                    disabled={!isAssignedOwner}
-                    onClick={saveProgress}
-                  >
-                    {progressSaved
-                      ? "Draft saved"
-                      : "Save draft"}
-                  </button>
-                </div>
-                {canMaintainDtp ? (
-                <section className="owner-dtp-maintenance">
-                  <div className="owner-dtp-heading">
-                    <div>
-                      <span className="section-kicker">Procedure ownership</span>
-                      <h3>Maintain desktop procedure</h3>
-                    </div>
-                    <span className={`dtp-state ${draft.dtpStatus.toLowerCase().replaceAll(" ", "-")}`}>
-                      {draft.dtpStatus}
-                    </span>
+              )}
+              {ownerTask === "procedure" && (
+                <section className="drawer-section owner-task-panel owner-procedure-tab">
+                  <div className="procedure-section-heading">
+                    <span className="section-kicker">Documentation</span>
+                    <h3>Procedure & evidence</h3>
                   </div>
-                  <p>
-                    Keep the working steps, owner, version and review dates up
-                    to date. Replacing a file preserves the prior version in
-                    history.
-                  </p>
-                  <label className="dtp-procedure-field">
-                    Procedure steps
-                    <textarea
-                      rows={6}
-                      value={draft.dtpSummary}
-                      onChange={(e) =>
-                        setDraft({ ...draft, dtpSummary: e.target.value })
-                      }
-                    />
-                  </label>
-                  <div className="dtp-meta-grid">
-                    <label>
-                      Version
-                      <input
-                        value={draft.dtpVersion}
-                        onChange={(e) =>
-                          setDraft({ ...draft, dtpVersion: e.target.value })
-                        }
-                      />
-                    </label>
-                    <label>
-                      Procedure owner
-                      <input
-                        value={draft.dtpOwner}
-                        onChange={(e) =>
-                          setDraft({ ...draft, dtpOwner: e.target.value })
-                        }
-                      />
-                    </label>
-                    <label>
-                      Procedure last reviewed
-                      <input
-                        type="date"
-                        value={draft.dtpLastReviewed}
-                        onChange={(e) =>
-                          setDraft({
-                            ...draft,
-                            dtpLastReviewed: e.target.value,
-                          })
-                        }
-                      />
-                    </label>
-                    <label>
-                      Next review
-                      <input
-                        type="date"
-                        value={draft.dtpNextReview}
-                        onChange={(e) =>
-                          setDraft({
-                            ...draft,
-                            dtpNextReview: e.target.value,
-                          })
-                        }
-                      />
-                    </label>
-                  </div>
-                  <label className="dtp-reference-field">
-                    Document or SharePoint reference
-                    <input
-                      value={draft.dtpDocument}
-                      onChange={(e) =>
-                        setDraft({ ...draft, dtpDocument: e.target.value })
-                      }
-                      placeholder="Filename or https://..."
-                    />
-                    <small>
-                      Paste a governed URL or attach a local file below.
-                    </small>
-                  </label>
-                  <label className="guidance-card file-card dtp-upload">
+                  <div className="guidance-card">
                     <span>▤</span>
                     <span>
                       <strong>
-                        {draft.dtpDocument || "Attach a desktop procedure"}
+                        {draft.dtpStatus === "Current"
+                          ? fileLabel(draft.dtpDocument) ||
+                            "Desktop procedure available"
+                          : "Desktop procedure not yet available"}
                       </strong>
                       <small>
-                        Filename retained for this browser-based prototype
+                        {draft.dtpStatus}
+                        {draft.dtpVersion
+                          ? ` · Version ${draft.dtpVersion}`
+                          : ""}
+                        {draft.dtpLastReviewed
+                          ? ` · Reviewed ${draft.dtpLastReviewed}`
+                          : ""}
                       </small>
                     </span>
-                    <b>+</b>
-                    <input
-                      type="file"
-                      onChange={(e) => {
-                        if (e.target.files?.[0])
-                          setDraft({
-                            ...draft,
-                            dtpDocument: e.target.files[0].name,
-                            dtpStatus: "Needs review",
-                            dtpOwner:
-                              draft.dtpOwner === "Unassigned"
-                                ? CURRENT_USER
-                                : draft.dtpOwner,
-                          });
-                      }}
-                    />
-                  </label>
-                  <div className="dtp-actions owner-dtp-actions">
-                    <button
-                      className="secondary-button owner-dtp-save"
-                      onClick={() => saveDtp()}
-                    >
-                      Save procedure draft
-                    </button>
-                    <button
-                      className="primary-button owner-dtp-save"
-                      onClick={confirmDtpCurrent}
-                    >
-                      Confirm procedure current
-                    </button>
                   </div>
-                  {draft.dtpHistory.length > 0 && (
-                    <div className="dtp-history">
-                      <strong>Version history</strong>
-                      {draft.dtpHistory.slice(0, 5).map((item, index) => (
-                        <span key={`${item.version}-${index}`}>
-                          {item.document} · {item.version} · {item.reviewedAt}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </section>
-                ) : (
-                  <div className="dtp-permission-note">
-                    <strong>Read-only procedure access</strong>
+                  <div className="procedure-review-meta">
                     <span>
-                      The assigned Control Owner or named procedure owner can
-                      maintain this DTP. All Control Owners can read it.
+                      <small>Procedure owner</small>
+                      <strong>{draft.dtpOwner || "Unassigned"}</strong>
+                    </span>
+                    <span>
+                      <small>Procedure last reviewed</small>
+                      <strong>{draft.dtpLastReviewed || "Not recorded"}</strong>
+                    </span>
+                    <span>
+                      <small>Your review confirmation</small>
+                      <strong>
+                        {control.documentationReviewedAt
+                          ? new Date(
+                              control.documentationReviewedAt,
+                            ).toLocaleString()
+                          : "Not confirmed"}
+                      </strong>
                     </span>
                   </div>
-                )}
-              </section>
+                  {(draft.dtpDocument || draft.dtpSummary) && (
+                    <button
+                      className="secondary-button dtp-open-button"
+                      onClick={() => {
+                        setShowDtpPreview(true);
+                      }}
+                    >
+                      Open desktop procedure
+                    </button>
+                  )}
+                  {canMaintainDtp && (
+                    <details className="dtp-quick-access" open>
+                      <summary>Maintain desktop procedure</summary>
+                      {dtpEditor}
+                    </details>
+                  )}
+                  {!canMaintainDtp && draft.dtpHistory.length > 0 && (
+                    <details>
+                      <summary>Version history</summary>
+                      {draft.dtpHistory.map((item, i) => (
+                        <div key={i}>
+                          <LocalFileLink reference={item.document} />
+                          <small>
+                            {item.version} · {item.reviewedAt}
+                          </small>
+                          <p className="preserve-lines">{item.summary}</p>
+                        </div>
+                      ))}
+                    </details>
+                  )}
+                  {draft.dtpSummary && (
+                    <p className="field-note">{draft.dtpSummary}</p>
+                  )}
+                  {draft.instructions && (
+                    <div className="fixed-scope">
+                      <span>Execution instructions</span>
+                      <strong>{draft.instructions}</strong>
+                    </div>
+                  )}
+                  {isAssignedOwner ? (
+                    <>
+                      <label className="guidance-card file-card">
+                        <span>▱</span>
+                        <span>
+                          <strong>
+                            Add execution evidence · {evidenceLabel(draft)}
+                          </strong>
+                          <small>
+                            {attachments.length
+                              ? attachments.map(fileLabel).join(", ")
+                              : "No evidence attached"}
+                          </small>
+                        </span>
+                        <b>+</b>
+                        <input
+                          type="file"
+                          disabled={
+                            uploadBusy || control.status === "Certified"
+                          }
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            e.target.value = "";
+                            if (!file) return;
+                            setUploadBusy(true);
+                            try {
+                              const ref = await storeLocalFile(file);
+                              addAttachment(ref);
+                              appendAudit(
+                                control.id,
+                                "Evidence uploaded",
+                                file.name,
+                              );
+                              notify("Evidence saved in this browser");
+                            } catch (error) {
+                              notify(
+                                error instanceof Error
+                                  ? error.message
+                                  : "Upload failed",
+                              );
+                            }
+                            setUploadBusy(false);
+                          }}
+                        />
+                      </label>
+                      <div className="evidence-link-row">
+                        <label>
+                          SharePoint or evidence link
+                          <input
+                            type="url"
+                            value={evidenceLink}
+                            onChange={(e) => setEvidenceLink(e.target.value)}
+                            placeholder="https://..."
+                          />
+                        </label>
+                        <button
+                          className="secondary-button"
+                          onClick={attachEvidenceLink}
+                        >
+                          Add link
+                        </button>
+                      </div>
+                      {attachments.length > 0 && (
+                        <div className="current-evidence-list">
+                          <strong>Current-period evidence</strong>
+                          {attachments.map((item, index) => (
+                            <LocalFileLink
+                              key={`${item}-${index}`}
+                              reference={item}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="evidence-permission-note">
+                      <strong>
+                        Evidence is restricted to the assigned owner.
+                      </strong>
+                      <span>
+                        You can read this control and its DTP from the library,
+                        but only its assigned Control Owner can view or add
+                        period evidence.
+                      </span>
+                    </div>
+                  )}
+                  <section className="previous-evidence">
+                    <div className="previous-evidence-heading">
+                      <strong>Previous-period evidence</strong>
+                      <small>{previousEvidence.length} retained</small>
+                    </div>
+                    {previousEvidence.length ? (
+                      previousEvidence.slice(0, 8).map((item, index) => (
+                        <span key={`${item.period}-${item.file}-${index}`}>
+                          <LocalFileLink reference={item.file} />
+                          <small>{item.period}</small>
+                        </span>
+                      ))
+                    ) : (
+                      <div className="previous-evidence-empty">
+                        No prior-period evidence is available for this control.
+                      </div>
+                    )}
+                  </section>
+                  <label className="check-card documentation-check">
+                    <input
+                      type="checkbox"
+                      checked={documentationReviewed}
+                      disabled={
+                        !isAssignedOwner || draft.dtpStatus !== "Current"
+                      }
+                      onChange={(e) => {
+                        setDocumentationReviewed(e.target.checked);
+                        setProgressSaved(false);
+                      }}
+                    />
+                    <span>
+                      <strong>I reviewed the current desktop procedure</strong>
+                      <small>
+                        {draft.dtpStatus !== "Current"
+                          ? "A current DTP must be added before this confirmation is available."
+                          : "Confirm that you have reviewed the procedure. Confirming it current below also records your review when you own this control."}
+                      </small>
+                    </span>
+                  </label>
+                  <div className="execution-confirmation">
+                    <span className="section-kicker">
+                      Execution confirmation
+                    </span>
+                    <label className="outcome-field">
+                      Execution outcome
+                      <select
+                        value={executionOutcome}
+                        aria-label="Execution outcome"
+                        disabled={!canExecute}
+                        onChange={(e) => {
+                          setExecutionOutcome(
+                            e.target.value as ExecutionOutcome,
+                          );
+                          setProgressSaved(false);
+                        }}
+                      >
+                        <option>Not recorded</option>
+                        <option>Performed as documented</option>
+                        <option>Performed with deviations</option>
+                        <option>Not performed</option>
+                      </select>
+                    </label>
+                    {executionOutcome === "Performed with deviations" && (
+                      <label className="outcome-field">
+                        Describe the deviation and immediate action
+                        <textarea
+                          rows={4}
+                          value={deviationNotes}
+                          disabled={!canExecute}
+                          onChange={(e) => {
+                            setDeviationNotes(e.target.value);
+                            setProgressSaved(false);
+                          }}
+                          placeholder="What differed from the procedure, what is the impact, and what action was taken?"
+                        />
+                      </label>
+                    )}
+                    <p className="field-note">
+                      Save at any point. Draft confirmations, outcomes and
+                      deviation notes become visible to Controllers without
+                      certifying the control.
+                    </p>
+                    <button
+                      className="secondary-button save-progress"
+                      disabled={!canExecute}
+                      onClick={saveProgress}
+                    >
+                      {progressSaved ? "Draft saved" : "Save draft"}
+                    </button>
+                  </div>
+                </section>
               )}
               {ownerTask === "support" && (
-              <>
-              <section className="drawer-section owner-task-panel">
-                <div>
-                  <span className="section-kicker">Ownership</span>
-                  <h3>People & support</h3>
-                </div>
-                <div className="people-row">
-                  <span className="avatar orange-avatar">
-                    {draft.owner === "Unassigned" ? "?" : DEMO_INITIALS}
-                  </span>
-                  <span>
-                    <small>Control Owner</small>
-                    <strong>{draft.owner}</strong>
-                  </span>
-                  <button
-                    onClick={() => setRequestModal("guidance")}
-                  >
-                    Ask for support
-                  </button>
-                </div>
-                {ownershipChanges
-                  .filter((change) => change.controlId === control.id)
-                  .slice(0, 3)
-                  .map((change) => (
-                    <small className="field-note" key={change.id}>
-                      {change.status || "Completed"} ·{" "}
-                      {new Date(change.changedAt).toLocaleDateString()}:{" "}
-                      {change.fromOwner} → {change.toOwner}
-                    </small>
-                  ))}
-              </section>
-              <section className="drawer-section certification-readiness">
-                <div>
-                  <span className="section-kicker">Certification readiness</span>
-                  <h3>
-                    {certificationBlockers.length
-                      ? `${certificationBlockers.length} item${certificationBlockers.length === 1 ? "" : "s"} to complete`
-                      : "Ready to certify"}
-                  </h3>
-                </div>
-                {certificationBlockers.length ? (
-                  <ul>
-                    {certificationBlockers.map((blocker) => (
-                      <li key={blocker}>{blocker}</li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p>
-                    Ownership, execution, procedure and evidence checks are
-                    complete for this period.
-                  </p>
-                )}
-              </section>
-              </>
+                <>
+                  <section className="drawer-section owner-task-panel">
+                    <div>
+                      <span className="section-kicker">Ownership</span>
+                      <h3>People & support</h3>
+                    </div>
+                    <div className="people-row">
+                      <span className="avatar orange-avatar">
+                        {draft.owner === "Unassigned" ? "?" : DEMO_INITIALS}
+                      </span>
+                      <span>
+                        <small>Control Owner</small>
+                        <strong>{draft.owner}</strong>
+                      </span>
+                      <button onClick={() => setRequestModal("guidance")}>
+                        Ask for support
+                      </button>
+                    </div>
+                    {ownershipChanges
+                      .filter((change) => change.controlId === control.id)
+                      .slice(0, 3)
+                      .map((change) => (
+                        <small className="field-note" key={change.id}>
+                          {change.status || "Completed"} ·{" "}
+                          {new Date(change.changedAt).toLocaleDateString()}:{" "}
+                          {change.fromOwner} → {change.toOwner}
+                        </small>
+                      ))}
+                  </section>
+                  <section className="drawer-section certification-readiness">
+                    <div>
+                      <span className="section-kicker">
+                        Certification readiness
+                      </span>
+                      <h3>
+                        {certificationBlockers.length
+                          ? `${certificationBlockers.length} item${certificationBlockers.length === 1 ? "" : "s"} to complete`
+                          : "Ready to certify"}
+                      </h3>
+                    </div>
+                    {certificationBlockers.length ? (
+                      <ul>
+                        {certificationBlockers.map((blocker) => (
+                          <li key={blocker}>{blocker}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>
+                        Ownership, execution, procedure and evidence checks are
+                        complete for this period.
+                      </p>
+                    )}
+                  </section>
+                </>
               )}
             </>
           )}
@@ -5404,7 +6009,7 @@ function ControlDrawer({
               </button>
               <button
                 className="secondary-button"
-                disabled={!isAssignedOwner}
+                disabled={!canExecute}
                 onClick={saveProgress}
               >
                 Save draft
@@ -5415,7 +6020,6 @@ function ControlDrawer({
                 onClick={() => {
                   updateControl(draft.id, {
                     status: "Certified",
-                    due: "Complete",
                     accepted,
                     understood,
                     acknowledgedAt,
@@ -5424,7 +6028,8 @@ function ControlDrawer({
                     deviationNotes: deviationNotes.trim(),
                     documentationReviewed,
                     documentationReviewedAt: documentationReviewed
-                      ? control.documentationReviewedAt || new Date().toISOString()
+                      ? control.documentationReviewedAt ||
+                        new Date().toISOString()
                       : undefined,
                     certifiedAt: new Date().toISOString(),
                   });
@@ -5588,9 +6193,9 @@ function ControlDrawer({
                   <div>
                     <strong>What happens after submission?</strong>
                     <p>
-                      The request is added to this control activity history
-                      and a simulated notification is sent to the Controller
-                      team. Enterprise routing will use Microsoft 365.
+                      The request is added to this control activity history and
+                      a simulated notification is sent to the Controller team.
+                      Enterprise routing will use Microsoft 365.
                     </p>
                   </div>
                 </div>
@@ -5675,10 +6280,13 @@ function ControlDrawer({
           >
             <header>
               <div>
-                <span className="section-kicker">Current desktop procedure</span>
+                <span className="section-kicker">
+                  Current desktop procedure
+                </span>
                 <h2 id="dtp-preview-title">{draft.name}</h2>
                 <p>
-                  {controlCode(draft)} · Version {draft.dtpVersion || "Not recorded"}
+                  {controlCode(draft)} · Version{" "}
+                  {draft.dtpVersion || "Not recorded"}
                 </p>
               </div>
               <button
@@ -5713,7 +6321,7 @@ function ControlDrawer({
               <div className="dtp-preview-source">
                 <span>▤</span>
                 <div>
-                  <strong>{draft.dtpDocument || "Inline procedure"}</strong>
+                  <LocalFileLink reference={draft.dtpDocument} />
                   <small>
                     {/^https?:\/\//i.test(draft.dtpDocument)
                       ? "Open the governed source in a new tab."
@@ -5758,7 +6366,8 @@ function PaginationBar({
   const totalPages =
     pageSize === "All" ? 1 : Math.max(1, Math.ceil(total / pageSize));
   const safePage = Math.min(page, totalPages);
-  const start = total === 0 ? 0 : pageSize === "All" ? 1 : (safePage - 1) * pageSize + 1;
+  const start =
+    total === 0 ? 0 : pageSize === "All" ? 1 : (safePage - 1) * pageSize + 1;
   const end =
     total === 0
       ? 0
@@ -5862,11 +6471,13 @@ function ControlTable({
                 <td>
                   <div className="control-title">
                     <span>
-                      {controlCode(control)} · {control.country} · {control.unit}
+                      {controlCode(control)} · {control.country} ·{" "}
+                      {control.unit}
                     </span>
                     <strong>{control.name}</strong>
                     <small>
-                      {control.pillar} · {control.businessProcess} · {control.process} · {control.nature}
+                      {control.pillar} · {control.businessProcess} ·{" "}
+                      {control.process} · {control.nature}
                       {control.keyControl ? " · Key" : ""}
                     </small>
                   </div>

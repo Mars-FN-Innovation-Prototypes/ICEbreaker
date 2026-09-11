@@ -28,7 +28,7 @@ test("server-renders the scalable ICEbreaker control tower", async () => {
   assert.match(html, /See risk sooner\. Act before it grows\./);
   assert.match(html, /Enterprise control health/i);
   assert.match(html, /Review of Completed Questionnaires in Enablon/);
-  assert.match(html, /Controls in scope<\/span><strong>132/);
+  assert.match(html, /Controls in scope<\/span><strong>\d+/);
   assert.match(html, /Sustainability Controls/);
   assert.match(html, /Detailed workflow status/);
   assert.match(html, /Evidence rules scoped/);
@@ -42,19 +42,21 @@ test("server-renders the scalable ICEbreaker control tower", async () => {
 });
 
 test("keeps the MVP accessible, functional and brand-aligned", async () => {
-  const [page, layout, css, packageJson] = await Promise.all([
+  const [pageSource, layout, css, packageJson, phase1] = await Promise.all([
     readFile(new URL("../app/icebreaker-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../app/phase1-workspace.tsx", import.meta.url), "utf8"),
   ]);
+  const page = pageSource + phase1;
 
   assert.match(page, /aria-label="Primary navigation"/);
   assert.match(page, /aria-label="Control detail panel"/);
   assert.match(page, /My controls/);
   assert.match(page, /Control Owner/);
   assert.match(page, /Demo Account/);
-  assert.match(page, /only\s+assignable user until enterprise identity is connected/);
+  assert.match(page, /test account directory/i);
   assert.match(page, /Active review & reporting cycle/);
   assert.match(page, /icebreaker-scope/);
   assert.match(page, /Countries/);
@@ -78,9 +80,9 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /SharePoint or evidence link/);
   assert.match(page, /Evidence is restricted to the assigned owner/);
   assert.match(page, /Guidance is shared; evidence stays restricted/);
-  assert.match(page, /governed GCP object storage/);
+  assert.match(page, /Azure handoff/);
   assert.match(page, /Desktop procedure/);
-  assert.match(page, /Simulated reminder/);
+  assert.match(page, /simulated reminder/i);
   assert.match(page, /MVP behavior: no email is sent/);
   assert.match(page, /Help center & 101/);
   assert.match(page, /Leadership.*Site owners.*Controllers/s);
@@ -133,7 +135,7 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.ok(page.includes("Missing / not added"));
   assert.match(page, /Control list pagination/);
   assert.match(page, /Showing \{start\}-\{end\} of \{total\} controls/);
-  assert.match(page, /From: \{reminderSender\} via ICEbreaker/);
+  assert.match(page, /From: \{m.sender\} via ICEbreaker/);
   assert.doesNotMatch(page, /visibleControls\.slice\(0,\s*8\)/);
   assert.doesNotMatch(page, /controls\.slice\(0,\s*10\)/);
   assert.match(page, /workflow-status-grid/);

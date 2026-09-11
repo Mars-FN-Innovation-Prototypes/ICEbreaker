@@ -37,6 +37,9 @@ export type OwnershipChange = {
   handoverConfirmed: boolean;
   trainingConfirmed: boolean;
   status?: "Requested" | "Completed" | "Resolved";
+  reviewedBy?: string;
+  reviewedAt?: string;
+  decisionNote?: string;
 };
 
 export type GapSeverity = "Low" | "Medium" | "High" | "Critical";
@@ -55,6 +58,7 @@ export type RemediationGap = {
   closureEvidence: string;
   controllerApproved: boolean;
   createdAt: string;
+  serviceNowReference?: string;
 };
 
 export type AuditEvent = {
@@ -78,22 +82,19 @@ export function defaultExecution(
     controlId: control.id,
     period,
     owner: control.owner || "Unassigned",
-    status: control.status,
+    status:
+      control.owner === "Unassigned" ? "Unassigned" : "Acknowledgement pending",
     due: control.due,
     region: control.region || "Europe",
     country: control.country || "",
     site: control.site || control.unit || "",
-    accepted: control.accepted || false,
-    understood: control.understood || false,
-    acknowledgedAt: control.acknowledgedAt,
-    performed: control.performed || false,
-    executionOutcome: control.executionOutcome || "Not recorded",
-    deviationNotes: control.deviationNotes || "",
-    draftSavedAt: control.draftSavedAt,
-    documentationReviewed: control.documentationReviewed || false,
-    documentationReviewedAt: control.documentationReviewedAt,
-    reassignmentRequested: control.reassignmentRequested || false,
-    certifiedAt: control.certifiedAt,
+    accepted: false,
+    understood: false,
+    performed: false,
+    executionOutcome: "Not recorded",
+    deviationNotes: "",
+    documentationReviewed: false,
+    reassignmentRequested: false,
   };
 }
 

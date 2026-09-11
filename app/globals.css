@@ -1,5 +1,52 @@
 @import "tailwindcss";
 
+/* Phase 1 additions reuse the existing Mars typography, palette and panel language. */
+.prototype-notice { color: var(--water, #19738d); background: #eef6f4; padding: 10px 16px; border-radius: 8px; font-size: 12px; margin: 12px 0 20px; }
+.storage-error { position: fixed; top: 0; left: 0; right: 0; z-index: 9999; background: #fff3e8; color: #9c1c18; padding: 14px; border: 2px solid #e51b23; }
+.phase1-panel { margin-bottom: 24px; }
+.phase1-panel h2 { color: #0000a0; margin: 8px 0 12px; }
+.phase1-panel h3 { margin: 12px 0; color: #0000a0; }
+.phase1-panel p { line-height: 1.65; margin: 12px 0; }
+.phase1-panel label, .owner-picker label { display: flex; flex-direction: column; gap: 7px; font-size: 13px; color: #3c3c3c; margin: 12px 0; }
+.phase1-panel input:not([type=checkbox]), .phase1-panel select, .phase1-panel textarea, .owner-picker input, .owner-picker select { width: 100%; min-width: 0; padding: 11px 12px; border: 1px solid #d8d1c9; border-radius: 8px; background: white; color: #3c3c3c; font: inherit; }
+.phase1-panel textarea { resize: vertical; min-height: 90px; }
+.phase1-panel input[type=checkbox], .bulk-control-list input { accent-color: #62bb46; }
+.phase1-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 16px 0; }
+.phase1-actions label { flex-direction: row; align-items: center; gap: 8px; margin: 0; }
+.phase1-actions input[type=file] { max-width: 240px; font-size: 12px; }
+.phase1-actions button:not(.primary-small):not(.secondary-small) { color: #0000a0; padding: 8px 12px; border: 1px solid #ded8cf; border-radius: 6px; }
+.phase1-panel small, .owner-picker small { display: block; color: #726d68; font-size: 12px; margin: 6px 0; line-height: 1.5; }
+.phase1-list > div { display: flex; flex-wrap: wrap; gap: 16px; padding: 14px 0; border-top: 1px solid #ebe5dd; align-items: center; }
+.phase1-list > div > span { flex: 1; font-size: 13px; }
+.phase1-list button { color: #0000a0; text-decoration: underline; }
+.owner-picker { margin: 12px 0; width: 100%; }
+.owner-picker select { margin-top: 6px; }
+.schedule-fields { padding: 14px; background: #f3f5fa; border-radius: 10px; margin: 14px 0; font-size: 12px; }
+.schedule-fields p { line-height: 1.65; margin-bottom: 10px; }
+.control-description { margin: 18px 0; border: 1px solid #dcdbe9; padding: 16px; border-radius: 10px; background: #f9f9ff; }
+.control-description summary { font-weight: 700; color: #0000a0; cursor: pointer; }
+.control-description p { font-size: 13px; line-height: 1.65; margin-top: 12px; }
+.local-instructions { margin: 12px 0; font-size: 13px; line-height: 1.65; }
+.local-instructions strong { color: #19738d; }
+.preserve-lines { white-space: pre-wrap; overflow-wrap: anywhere; }
+.local-file-link { display: block; margin: 8px 0; font-size: 13px; overflow-wrap: anywhere; }
+.local-file-link .text-link, .local-file-link a { color: #0000a0; text-decoration: underline; text-align: left; cursor: pointer; }
+.local-file-link small { display: block; color: #867f76; font-size: 11px; }
+.local-file-link [role=alert] { color: #b52424; }
+.guidance-message { background: #f4f7f5; border-left: 3px solid #62bb46; padding: 16px; margin: 16px 0; }
+.bulk-control-list { max-height: 300px; overflow: auto; border: 1px solid #e2e4e6; padding: 0 12px; border-radius: 8px; }
+.bulk-control-list label { display: flex; flex-direction: row; align-items: center; padding: 10px 0; border-bottom: 1px solid #eee; gap: 12px; }
+.bulk-control-list label > span { flex: 1; }
+.saved-view-row { display: flex; align-items: center; border-top: 1px solid #eee; }
+.saved-view-row > button:first-child { display: flex; align-items: center; gap: 12px; flex: 1; text-align: left; padding: 14px; }
+.saved-view-row small { display: block; font-size: 11px; color: #79736c; }
+.saved-view-row .delete-view { padding: 10px 15px; color: #0000a0; font-size: 22px; }
+.dtp-quick-access { margin: 18px 0; }
+.dtp-quick-access > summary { color: #0000a0; font-weight: 700; cursor: pointer; padding: 12px 0; }
+.admin-tabs { flex-wrap: wrap; }
+button:disabled { cursor: not-allowed; opacity: .5; }
+@media (max-width: 700px) { .phase1-actions { align-items: stretch; flex-direction: column; } .phase1-actions label { flex-wrap: wrap; } }
+
 :root {
   --pea: #62bb46;
   --mars-blue: #0000a0;

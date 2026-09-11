@@ -6,6 +6,7 @@ export type ControlPillar =
   | "Operating Controls";
 
 export type ControlStatus =
+  | "Not due this period"
   | "Certified"
   | "Ready to certify"
   | "Performed with deviations"
@@ -23,6 +24,7 @@ export type DtpHistoryEntry = {
   version: string;
   owner: string;
   reviewedAt: string;
+  summary?: string;
 };
 
 export type ExecutionOutcome =
@@ -31,10 +33,7 @@ export type ExecutionOutcome =
   | "Performed with deviations"
   | "Not performed";
 
-export type EvidenceRequirement =
-  | "Required"
-  | "Not required"
-  | "Not scoped";
+export type EvidenceRequirement = "Required" | "Not required" | "Not scoped";
 
 export type ControlLifecycle = "Active" | "Not applicable" | "Archived";
 
@@ -51,6 +50,10 @@ export type InventoryControl = {
   description: string;
   frequency: string;
   attestationFrequency: string;
+  dueWeek?: number;
+  dueDay?: number;
+  regionalInstructions?: string;
+  activatedPeriods?: string[];
   keyControl: boolean;
   fraudControl: boolean;
   nature: "Preventive" | "Detective";
@@ -143,7 +146,7 @@ export const inventoryControls: InventoryControl[] = fullControlRows.map(
       country: row.country,
       site: row.unit,
       unit: row.unit,
-      instructions: row.controlDescription,
+      instructions: "",
       applicable: true,
       lifecycle: "Active",
       dtpSummary: "",
