@@ -1,4 +1,7 @@
 @import "tailwindcss";
+.recovery-panel { margin: 5vh auto; max-width: 760px; padding: 32px; background: #fff3e8; color: #3c3c3c; border: 2px solid #0000a0; border-radius: 14px; font-family: Arial, sans-serif; }
+.recovery-panel h1 { color: #0000a0; font-size: 26px; margin: 24px 0 12px; }
+.recovery-panel p { margin: 16px 0; line-height: 1.6; }
 
 /* Phase 1 additions reuse the existing Mars typography, palette and panel language. */
 .prototype-notice { color: var(--water, #19738d); background: #eef6f4; padding: 10px 16px; border-radius: 8px; font-size: 12px; margin: 12px 0 20px; }

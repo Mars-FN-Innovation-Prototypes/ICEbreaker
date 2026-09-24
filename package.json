@@ -1,44 +1,47 @@
 {
-  "name": "site-creator-vinext-starter",
+  "name": "icebreaker-controls-hub",
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=22.13.0"
+    "node": "^22.13.0 || ^24.0.0"
   },
   "scripts": {
-    "dev": "vinext dev",
-    "build": "vinext build",
+    "dev": "vite --host localhost",
+    "build": "node scripts/build.mjs",
     "build:github-pages": "node scripts/build-github-pages.mjs",
-    "start": "vinext start",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs tests/phase1-domain.test.mjs",
-    "lint": "eslint app tests --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "preview": "vite preview --host localhost --port 4178",
+    "test": "npm run build && node --import tsx --test tests/*.test.mjs",
+    "test:ui": "node tests/phase1-ui.mjs && node tests/hardening-ui.mjs",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit",
+    "lint": "eslint app tests scripts vite.config.ts",
+    "check": "npm run lint && npm run typecheck && npm test",
+    "audit": "npm audit --audit-level=moderate",
+    "release:check": "node scripts/release-check.mjs",
+    "perf:baseline": "node --import tsx scripts/performance-baseline.mjs"
   },
   "dependencies": {
-    "drizzle-orm": "0.45.2",
-    "next": "16.2.6",
-    "react": "19.2.6",
-    "react-dom": "19.2.6",
-    "read-excel-file": "^5.8.1",
-    "write-excel-file": "^2.3.10"
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "read-excel-file": "9.3.10",
+    "write-excel-file": "4.1.1",
+    "zod": "4.6.5",
+    "fflate": "0.8.3"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
-    "@tailwindcss/postcss": "4.2.1",
+    "@tailwindcss/postcss": "4.3.3",
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.63.0",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.2",
-    "@vitejs/plugin-rsc": "0.5.26",
-    "drizzle-kit": "0.31.10",
-    "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
-    "react-server-dom-webpack": "19.2.6",
-    "tailwindcss": "4.2.1",
+    "@vitejs/plugin-react": "6.1.1",
+    "eslint": "10.11.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "typescript-eslint": "8.70.1",
+    "tsx": "4.20.6",
+    "tailwindcss": "4.3.3",
     "typescript": "5.9.3",
-    "vinext": "0.0.50",
-    "vite": "8.0.13",
-    "wrangler": "4.92.0"
+    "vite": "8.3.1"
   },
   "type": "module"
 }

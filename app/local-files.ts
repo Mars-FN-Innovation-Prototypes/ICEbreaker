@@ -1,4 +1,5 @@
 import { fileId } from "./phase1-domain";
+import { validateDocument } from "./input-safety";
 
 export type LocalFile = {
   id: string;
@@ -12,15 +13,43 @@ const MAX_TOTAL_BYTES = 150 * 1024 * 1024;
 function database(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open("icebreaker-local-files", 1);
+    let settled = false;
+    const timeout = setTimeout(() => {
+      settled = true;
+      reject(
+        new Error(
+          "Document storage timed out. Close other ICEbreaker tabs and retry.",
+        ),
+      );
+    }, 10000);
     request.onupgradeneeded = () =>
       request.result.createObjectStore("files", { keyPath: "id" });
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () =>
+    request.onsuccess = () => {
+      clearTimeout(timeout);
+      if (settled) request.result.close();
+      else {
+        settled = true;
+        resolve(request.result);
+      }
+    };
+    request.onblocked = () => {
+      clearTimeout(timeout);
+      settled = true;
+      reject(
+        new Error(
+          "Document storage is blocked by another tab. Close other ICEbreaker tabs and retry.",
+        ),
+      );
+    };
+    request.onerror = () => {
+      clearTimeout(timeout);
+      settled = true;
       reject(
         new Error(
           "Browser document storage is unavailable. Check browser permissions and available space.",
         ),
       );
+    };
   });
 }
 async function transaction<T>(
@@ -52,6 +81,7 @@ export const readLocalFile = (ref: string) =>
     store.get(fileId(ref)),
   );
 export async function storeLocalFile(file: File): Promise<string> {
+  const validatedType = await validateDocument(file);
   if (!file.size || file.size > MAX_FILE_BYTES)
     throw new Error("Choose a non-empty file up to 20 MB.");
   if (!/\.(pdf|docx|xlsx|pptx|png|jpe?g|txt|csv)$/i.test(file.name))
@@ -71,8 +101,8 @@ export async function storeLocalFile(file: File): Promise<string> {
     store.add({
       id,
       name: file.name,
-      type: file.type,
-      data: file,
+      type: validatedType,
+      data: new Blob([file], { type: validatedType }),
       createdAt: new Date().toISOString(),
     }),
   );
@@ -80,6 +110,24 @@ export async function storeLocalFile(file: File): Promise<string> {
 }
 export async function restoreLocalFiles(files: LocalFile[]) {
   const existing = await allLocalFiles();
+  // Restore may add files but cannot overwrite different evidence under an old ID.
+  for (const file of files) {
+    const old = existing.find((item) => item.id === file.id);
+    if (old) {
+      const digest = async (blob: Blob) =>
+        new Uint8Array(
+          await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()),
+        ).join(",");
+      if (
+        old.name !== file.name ||
+        old.data.size !== file.data.size ||
+        (await digest(old.data)) !== (await digest(file.data))
+      )
+        throw new Error(
+          "Backup document conflicts with existing evidence. Nothing was overwritten; restore into a separate browser profile for reconciliation.",
+        );
+    }
+  }
   const retained = existing.filter(
     (old) => !files.some((f) => f.id === old.id),
   );
@@ -95,7 +143,10 @@ export async function restoreLocalFiles(files: LocalFile[]) {
     const tx = db.transaction("files", "readwrite");
     const store = tx.objectStore("files");
     // Merge files before restoring metadata. Existing files are never cleared.
-    files.forEach((file) => store.put(file));
+    // Existing immutable IDs are retained; a concurrent conflicting add aborts.
+    files
+      .filter((file) => !existing.some((old) => old.id === file.id))
+      .forEach((file) => store.add(file));
     tx.oncomplete = () => {
       db.close();
       resolve();
