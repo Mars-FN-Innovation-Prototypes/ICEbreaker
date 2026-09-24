@@ -1,6 +1,5 @@
 "use client";
 /* Static brand assets are intentionally served directly on GitHub Pages. */
-/* eslint-disable @next/next/no-img-element */
 
 import {
   Component,
@@ -28,8 +27,8 @@ import {
   type OwnershipChange,
   type RemediationGap,
 } from "./control-domain";
-import readXlsxFile from "read-excel-file";
-import writeXlsxFile from "write-excel-file";
+import { readXlsxFile, writeXlsxFile } from "./spreadsheets";
+import { safeExternalUrl } from "./input-safety";
 import {
   Phase1Provider,
   usePhase1,
@@ -58,7 +57,8 @@ import {
   needsGuidanceResponse,
 } from "./phase1-domain";
 import { storeLocalFile } from "./local-files";
-import { persistWorkspaceValue } from "./local-state";
+import { persistWorkspaceValue, readWorkspace, blockWorkspaceWrites } from "./local-state";
+import { RecoveryPanel } from "./workspace-boundary";
 
 type Role = "Controller Admin" | "Control Owner";
 type Nav =
@@ -386,6 +386,7 @@ export default function IcebreakerApp() {
 }
 
 function IcebreakerWorkspace() {
+  const [workspaceError, setWorkspaceError] = useState("");
   const { state: phase1, currentUser: CURRENT_USER } = usePhase1();
   const [role, setRole] = useState<Role>("Controller Admin");
   const [activeNav, setActiveNav] = useState<Nav>("Control tower");
@@ -483,6 +484,7 @@ function IcebreakerWorkspace() {
   useEffect(() => {
     const hydrate = window.setTimeout(() => {
       try {
+        readWorkspace();
         const storedVersion = window.localStorage.getItem(
           "icebreaker-data-version",
         );
@@ -608,11 +610,20 @@ function IcebreakerWorkspace() {
             });
         }
       } catch {
-        /* Ignore stale local MVP data. */
+        blockWorkspaceWrites();
+        setWorkspaceError("Saved data could not be loaded safely or needs migration. It has not been overwritten with defaults.");
+        return;
       }
       setHydrated(true);
     }, 0);
     return () => window.clearTimeout(hydrate);
+  }, []);
+  useEffect(() => {
+    const conflict = () => { blockWorkspaceWrites(); setWorkspaceError("This workspace changed in another tab. Export any unsaved work, then reload to avoid overwriting newer changes."); };
+    const changed = (event: StorageEvent) => { if (event.storageArea === localStorage && (!event.key || event.key.startsWith("icebreaker-"))) conflict(); };
+    window.addEventListener("storage", changed);
+    window.addEventListener("icebreaker-workspace-conflict", conflict);
+    return () => { window.removeEventListener("storage", changed); window.removeEventListener("icebreaker-workspace-conflict", conflict); };
   }, []);
   useEffect(() => {
     if (!hydrated) return;
@@ -994,13 +1005,14 @@ function IcebreakerWorkspace() {
   };
 
   const pageCopy = copy[activeNav];
+  if (workspaceError) return <RecoveryPanel message={workspaceError} />;
   return (
     <div className="app-shell" inert={!hydrated} aria-busy={!hydrated}>
       <aside className="sidebar">
         <div className="brand-block">
           <img
             className="brand-lockup"
-            src="/brand/logo-lockup.png"
+            src={`${import.meta.env.BASE_URL}brand/logo-lockup.png`}
             alt="Mars Food & Nutrition"
           />
           <div className="product-name">
@@ -1035,7 +1047,7 @@ function IcebreakerWorkspace() {
         <div className="sidebar-spacer" />
         <div className="purpose-card">
           <img
-            src="/brand/better-food-text.png"
+            src={`${import.meta.env.BASE_URL}brand/better-food-text.png`}
             alt="Better food today. A better world tomorrow."
           />
           <p>Controls that protect trust in every decision.</p>
@@ -4666,7 +4678,7 @@ function ControlDrawer({
       return;
     }
     const link = evidenceLink.trim();
-    if (!/^https?:\/\//i.test(link)) {
+    if (!safeExternalUrl(link)) {
       notify(
         "Paste a complete SharePoint or evidence URL beginning with https://",
       );
@@ -6366,8 +6378,8 @@ function ControlDrawer({
                       : "Source reference retained with this control."}
                   </small>
                 </div>
-                {/^https?:\/\//i.test(draft.dtpDocument) && (
-                  <a href={draft.dtpDocument} target="_blank" rel="noreferrer">
+                {safeExternalUrl(draft.dtpDocument) && (
+                  <a href={safeExternalUrl(draft.dtpDocument)!} target="_blank" rel="noopener noreferrer">
                     Open source
                   </a>
                 )}
