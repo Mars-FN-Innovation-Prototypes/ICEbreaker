@@ -54,7 +54,7 @@ try {
   await profile("Control Owner");
   await page
     .getByRole("button", {
-      name: /Review of Completed Questionnaires in Enablon/,
+      name: /Review of Completed Questionnaires in Enablon.*OBL/,
     })
     .first()
     .click();
@@ -86,7 +86,7 @@ try {
   await profile("Control Owner");
   await page
     .getByRole("button", {
-      name: /Review of Completed Questionnaires in Enablon/,
+      name: /Review of Completed Questionnaires in Enablon.*OBL/,
     })
     .first()
     .click();
@@ -98,6 +98,8 @@ try {
   );
   console.log("PASS separate acknowledgement persists without execution");
   await drawer.getByRole("button", { name: /Procedure & execution/ }).click();
+  assert.equal(await drawer.getByLabel("Procedure last reviewed", {exact:true}).getAttribute("readonly"), "");
+  assert.equal(await drawer.getByRole("checkbox", {name:/I reviewed the current/}).count(), 0);
   await drawer
     .getByLabel("Procedure steps", { exact: true })
     .fill(
@@ -217,7 +219,7 @@ try {
   await profile("Control Owner", "Demo Owner Two");
   await page
     .getByRole("button", {
-      name: /Review of Completed Questionnaires in Enablon/,
+      name: /Review of Completed Questionnaires in Enablon.*OBL/,
     })
     .first()
     .click();
@@ -253,6 +255,10 @@ try {
   );
   await profile("Controller Admin");
   await nav("Guidance requests");
+  assert.ok(await page.getByLabel("1 requests awaiting response").isVisible());
+  await page.getByLabel("Search requests", {exact:true}).fill("no-match-test");
+  assert.equal(await page.getByRole("textbox", {name:"Reply",exact:true}).count(),0);
+  await page.getByRole("button",{name:"Clear request filters"}).click();
   await page
     .getByRole("textbox", { name: "Reply", exact: true })
     .fill("Compare the test source records and record differences.");
@@ -343,7 +349,7 @@ try {
   await profile("Control Owner", "Demo Owner Two");
   await page
     .getByRole("button", {
-      name: /Review of Completed Questionnaires in Enablon/,
+      name: /Review of Completed Questionnaires in Enablon.*OBL/,
     })
     .first()
     .click();
@@ -358,9 +364,7 @@ try {
     .getByRole("button", { name: "Acknowledge & save", exact: true })
     .click();
   await drawer.getByRole("button", { name: /Procedure & execution/ }).click();
-  await drawer
-    .getByRole("checkbox", { name: /I reviewed the current desktop procedure/ })
-    .check();
+  await drawer.getByRole("button", {name:"Confirm procedure current", exact:true}).click();
   await drawer
     .getByRole("button", { name: "Save draft", exact: true })
     .first()
@@ -375,7 +379,7 @@ try {
     .selectOption("FY 2026");
   await page
     .getByRole("button", {
-      name: /Review of Completed Questionnaires in Enablon/,
+      name: /Review of Completed Questionnaires in Enablon.*OBL/,
     })
     .first()
     .click();
@@ -393,6 +397,15 @@ try {
   await profile("Controller Admin");
   await nav("Admin setup");
   await page.getByRole("button", { name: "Calendar", exact: true }).click();
+  await page.getByLabel("Period name", {exact:true}).fill("Unused test period");
+  await page.getByLabel("Start", {exact:true}).fill("2027-02-01");
+  await page.getByLabel("End", {exact:true}).fill("2027-02-28");
+  await page.getByRole("button",{name:"Save period",exact:true}).click();
+  await page.getByRole("button",{name:"Delete period Unused test period",exact:true}).click();
+  await page.getByRole("button",{name:"Confirm delete period",exact:true}).click();
+  assert.equal((await store("icebreaker-phase1")).calendar.some((p)=>p.id==="Unused test period"),false);
+  assert.equal(await page.getByRole("button",{name:"Delete period Q3 2026",exact:true}).isDisabled(),true);
+  console.log("PASS unused calendar deletion and historical-period protection");
   const calendarRows = [
     [
       "Period",
@@ -428,7 +441,7 @@ try {
   assert.equal(
     await page
       .getByRole("button", {
-        name: /Review of Completed Questionnaires in Enablon/,
+        name: /Review of Completed Questionnaires in Enablon.*OBL/,
       })
       .count(),
     0,
@@ -559,6 +572,25 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log("PASS searchable 100+ owner directory");
+  await page.getByRole("button",{name:/Demo Test 120.*test120/}).click();
+  assert.equal(await page.getByRole("combobox",{name:"Control Owner",exact:true}).inputValue(),"Demo Test 120");
+  await page.getByRole("textbox",{name:"Search Control Owner",exact:true}).fill("  OWNER   TWO ");
+  await page.getByRole("button",{name:/Demo Owner Two.*owner.two/}).click();
+  assert.equal(await page.getByRole("combobox",{name:"Control Owner",exact:true}).inputValue(),"Demo Owner Two");
+  console.log("PASS visible owner search results select the intended account");
+  await nav("Controls library");
+  await page.getByText("Review of Completed Questionnaires in Enablon", {exact:true}).first().click();
+  drawer = page.getByLabel("Control detail panel");
+  await drawer.getByRole("combobox",{name:"Attestation frequency",exact:true}).selectOption("Annual");
+  await drawer.getByRole("combobox",{name:/Frequency effective period/}).selectOption("Test P03");
+  await drawer.getByRole("button",{name:"Save control requirements",exact:true}).click();
+  await close();
+  const changed = (await store("icebreaker-control-definitions")).find((c)=>c.id===id);
+  assert.equal(changed.attestationChanges.at(-1).frequency,"Annual");
+  assert.equal(changed.attestationChanges.at(-1).period,"Test P03");
+  assert.equal((await store("icebreaker-executions"))[key].status,"Certified");
+  assert.equal((await store("icebreaker-executions"))[key].due,"2026-09-30");
+  console.log("PASS controlled frequency changes and historical certification preservation");
   await nav("Gap remediation");
   const gapForm = page.locator('.gap-create');
   await gapForm.getByRole('textbox', {name:'Gap title', exact:true}).fill('Synthetic gap validation');

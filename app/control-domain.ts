@@ -24,6 +24,7 @@ export type ControlExecution = {
   documentationReviewedAt?: string;
   reassignmentRequested: boolean;
   certifiedAt?: string;
+  attestationFrequency?: string;
 };
 
 export type OwnershipChange = {
@@ -81,6 +82,7 @@ export function defaultExecution(
   return {
     controlId: control.id,
     period,
+    attestationFrequency: control.attestationFrequency,
     owner: control.owner || "Unassigned",
     status:
       control.owner === "Unassigned" ? "Unassigned" : "Acknowledgement pending",

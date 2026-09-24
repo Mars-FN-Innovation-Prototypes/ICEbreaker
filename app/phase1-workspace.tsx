@@ -13,7 +13,11 @@ import writeXlsxFile from "write-excel-file";
 import type { InventoryControl } from "./inventory-controls";
 import {
   INITIAL_PHASE1,
-  REMINDER_RULES,
+  DEFAULT_REMINDER_POLICIES,
+  ATTESTATION_FREQUENCIES,
+  matchingPeople,
+  mergeReminderMessages,
+  guidanceReminders,
   validateCalendar,
   reminderCandidates,
   fileLabel,
@@ -71,7 +75,7 @@ export function Phase1Provider({ children }: { children: ReactNode }) {
             Array.isArray(saved.rules) &&
             Array.isArray(saved.messages)
           )
-            setState(saved);
+            setState({...saved, reminderPolicies: saved.reminderPolicies || DEFAULT_REMINDER_POLICIES});
         }
       } catch {
         setStorageError(
@@ -122,11 +126,7 @@ export function OwnerPicker({
 }) {
   const { state } = usePhase1();
   const [search, setSearch] = useState("");
-  const matches = state.people.filter((person) =>
-    `${person.name} ${person.email} ${person.unit}`
-      .toLowerCase()
-      .includes(search.toLowerCase()),
-  );
+  const matches = matchingPeople(state.people, search);
   return (
     <div className="owner-picker">
       <label>
@@ -159,6 +159,14 @@ export function OwnerPicker({
           </option>
         ))}
       </select>
+      {search.trim() && <div className="owner-search-results" aria-label={`${label} search results`}>
+        {matches.slice(0, 10).map((person) => <button type="button" key={person.email}
+          onClick={() => { onChange(person.name); setSearch(""); }}>
+          <strong>{person.name}</strong><small>{person.email} · {person.unit}</small>
+        </button>)}
+        {!matches.length && <p role="status">No matching accounts. Try a name, email or unit.</p>}
+        {matches.length > 10 && <small>Showing 10 of {matches.length}. Narrow your search or use the list.</small>}
+      </div>}
       <small>
         {matches.length} matching test accounts · no corporate directory
         connection
@@ -258,17 +266,23 @@ export function ScheduleFields({
         </label>
       </div>
       <small>
+        This is the Control Owner’s certification deadline, NOT a Controller testing date.
         Weeks start on the imported period start date. Leave the week empty to
         use period end. A saved date overrides the rule for the selected period
-        only.
+        only. A period-end versus PEC/YE-close submission offset is still awaiting
+        business confirmation; enter the approved exact due date meanwhile.
       </small>
     </div>
   );
 }
 export function CalendarSetup({
   notify,
+  protectedPeriods,
+  currentPeriod,
 }: {
   notify: (message: string) => void;
+  protectedPeriods: string[];
+  currentPeriod: string;
 }) {
   const { state, setState } = usePhase1();
   const [draft, setDraft] = useState<CalendarPeriod>({
@@ -283,6 +297,11 @@ export function CalendarSetup({
     rows: CalendarPeriod[];
     errors: string[];
   } | null>(null);
+  const [deleteId, setDeleteId] = useState("");
+  const blocked = (id: string) => id === currentPeriod ? "Select another certification period before deleting this one." :
+    protectedPeriods.includes(id) || state.guidance.some((r) => r.period === id) || state.messages.some((m) => m.period === id || m.items?.some((i) => i.period === id))
+      ? "Retained because execution, evidence, scheduling or activity history uses this period." :
+      state.calendar.length <= 1 ? "Keep at least one period." : "";
   const headers = [
     "Period",
     "Start",
@@ -469,9 +488,21 @@ export function CalendarSetup({
               {p.yearEnd ? " · Year end" : ""}
             </span>
             <button onClick={() => setDraft(p)}>Edit</button>
+            <button aria-label={`Delete period ${p.id}`} disabled={!!blocked(p.id)} title={blocked(p.id)} onClick={() => setDeleteId(p.id)}>Delete</button>
+            {blocked(p.id) && <small>{blocked(p.id)}</small>}
           </div>
         ))}
       </div>
+      {deleteId && <div role="alertdialog" aria-label="Delete unused period" className="import-preview">
+        <strong>Delete {deleteId}?</strong><p>Only unused periods can be deleted. Records and evidence are never deleted here.</p>
+        <button className="primary-small" onClick={() => {
+          const reason = blocked(deleteId); if (reason) return notify(reason);
+          setState((s) => ({...s, calendar: s.calendar.filter((p) => p.id !== deleteId)}));
+          if (draft.id === deleteId) setDraft({...draft, id: "", start: "", end: ""});
+          setDeleteId(""); notify("Unused period deleted. Historical data retained.");
+        }}>Confirm delete period</button>
+        <button className="secondary-small" onClick={() => setDeleteId("")}>Cancel</button>
+      </div>}
     </article>
   );
 }
@@ -486,11 +517,19 @@ export function GuidanceInbox({
 }) {
   const { state, setState, currentUser } = usePhase1();
   const [filter, setFilter] = useState("All requests");
+  const [search, setSearch] = useState("");
+  const [unit, setUnit] = useState("");
+  const [owner, setOwner] = useState("");
+  const [cycle, setCycle] = useState("");
+  const [urgency, setUrgency] = useState("");
   const [replies, setReplies] = useState<Record<string, string>>({});
   const requests = state.guidance.filter(
     (r) =>
       (role === "Controller Admin" || r.owner === currentUser) &&
-      (filter === "All requests" || r.status === filter),
+      (filter === "All requests" || r.status === filter) &&
+      (!owner || r.owner === owner) && (!cycle || r.period === cycle) && (!urgency || r.urgency === urgency) &&
+      (!unit || controls.find((c) => c.id === r.controlId)?.unit === unit) &&
+      `${r.question} ${r.topic} ${r.owner} ${controls.find((c) => c.id === r.controlId)?.name || ""} ${controls.find((c) => c.id === r.controlId)?.controlNumber || ""}`.toLowerCase().includes(search.trim().toLowerCase()),
   );
   const update = (id: string, change: Partial<GuidanceRequest>) =>
     setState((s) => ({
@@ -512,6 +551,8 @@ export function GuidanceInbox({
           switch test roles to review the full journey. No email or Teams
           message is sent.
         </p>
+        <div className="report-filters">
+        <label>Search requests<input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Control, question, topic or owner" /></label>
         <label>
           Status
           <select value={filter} onChange={(e) => setFilter(e.target.value)}>
@@ -520,6 +561,14 @@ export function GuidanceInbox({
             ))}
           </select>
         </label>
+        {([['Unit', unit, setUnit, [...new Set(controls.map((c) => c.unit))]],
+          ['Request owner', owner, setOwner, [...new Set(state.guidance.filter((r) => role === 'Controller Admin' || r.owner === currentUser).map((r) => r.owner))]],
+          ['Request period', cycle, setCycle, [...new Set(state.guidance.map((r) => r.period))]],
+          ['Urgency', urgency, setUrgency, [...new Set(state.guidance.map((r) => r.urgency))]]] as const).map(([label, value, change, values]) =>
+          <label key={label}>{label}<select value={value} onChange={(e) => change(e.target.value)}><option value="">All</option>{values.map((v) => <option key={v}>{v}</option>)}</select></label>)}
+        </div>
+        <button className="text-link" onClick={() => {setFilter("All requests");setSearch("");setUnit("");setOwner("");setCycle("");setUrgency("");}}>Clear request filters</button>
+        <small>{requests.length} matching requests. Sidebar count shows requests awaiting your role’s response.</small>
       </div>
       {!requests.length && (
         <div className="panel empty-state">
@@ -626,31 +675,44 @@ export function ReminderSetup({
     [],
   );
   const [showLog, setShowLog] = useState(false);
+  const [policyDraft, setPolicyDraft] = useState(Object.fromEntries(Object.entries(state.reminderPolicies || DEFAULT_REMINDER_POLICIES).map(([key, days]) => [key, days.join(", ")])));
+  const [policyError, setPolicyError] = useState("");
+  const policies = state.reminderPolicies || DEFAULT_REMINDER_POLICIES;
+  const savePolicies = () => {
+    const parsed: Record<string, number[]> = {};
+    for (const frequency of ATTESTATION_FREQUENCIES) {
+      const raw = policyDraft[frequency]?.trim() || "";
+      const values = raw ? raw.split(",").map((v) => v.trim()) : [];
+      if (values.some((v) => !/^\d+$/.test(v) || Number(v) > 365)) {
+        setPolicyError(`${frequency}: use comma-separated whole calendar days from 0 to 365, or leave blank for manual reminders.`); return;
+      }
+      parsed[frequency] = [...new Set(values.map(Number))].sort((a, b) => b - a);
+    }
+    setState((s) => ({...s, reminderPolicies: parsed})); setPolicyError("");
+    notify("Reminder policies saved. Existing simulation history and control deadlines are unchanged.");
+  };
   const generate = () => {
     if (!isDate(date)) return notify("Choose a valid simulation date");
     const candidates = reminderCandidates(
       controls,
       period,
       date,
-      state.rules,
+      policies,
       currentUser,
     );
-    setPreview(candidates);
+    const merged = mergeReminderMessages(state.messages, candidates);
+    setPreview(merged.filter((m) => candidates.some((c) => c.key === m.key)));
     setShowLog(false);
     setState((s) => ({
       ...s,
-      messages: [
-        ...candidates.filter(
-          (m) => !s.messages.some((old) => old.key === m.key),
-        ),
-        ...s.messages,
-      ],
+      messages: mergeReminderMessages(s.messages, candidates),
     }));
     notify(
-      `${candidates.length} simulated reminders. Duplicate runs do not duplicate the log. No email sent.`,
+      `${candidates.length} simulated daily digests. Duplicate runs do not duplicate the log. No email sent.`,
     );
   };
   const readiness = () => {
+    if (!isDate(date)) return notify("Choose a valid simulation date");
     const c = controls.find((c) => c.id === target);
     if (!c || c.owner === "Unassigned")
       return notify("Choose an assigned control for the readiness notice");
@@ -672,6 +734,13 @@ export function ReminderSetup({
     setState((s) => ({ ...s, messages: [m, ...s.messages] }));
     notify("Readiness notice recorded in the simulation log. No email sent.");
   };
+  const previewGuidance = () => {
+    if (!isDate(date)) return notify("Choose a valid simulation date");
+    const candidates = guidanceReminders(state.guidance, date, currentUser);
+    setPreview(candidates); setShowLog(false);
+    setState((s) => ({...s, messages: mergeReminderMessages(s.messages, candidates)}));
+    notify(`${candidates.length} guidance follow-ups simulated. No email sent.`);
+  };
   const messages = showLog ? state.messages : preview;
   return (
     <div className="phase1-panel">
@@ -683,25 +752,15 @@ export function ReminderSetup({
           previews, not background jobs. The enterprise handoff will use
           approved Microsoft Graph delivery and Azure scheduling.
         </p>
-        <div className="phase1-actions">
-          {REMINDER_RULES.map((rule) => (
-            <label key={rule}>
-              <input
-                type="checkbox"
-                checked={state.rules.includes(rule)}
-                onChange={(e) =>
-                  setState((s) => ({
-                    ...s,
-                    rules: e.target.checked
-                      ? [...s.rules, rule]
-                      : s.rules.filter((r) => r !== rule),
-                  }))
-                }
-              />{" "}
-              {rule}
-            </label>
-          ))}
-        </div>
+        <h3>Central policies by attestation frequency</h3>
+        <p>Calendar days, including weekends. Enter days before the approved deadline; 0 means deadline day. Controls inherit their frequency’s policy. Semi-annual and event-based schedules require Controller configuration before automatic simulation.</p>
+        <div className="report-filters">{ATTESTATION_FREQUENCIES.map((frequency) => <label key={frequency}>
+          {frequency} reminder days<input value={policyDraft[frequency] || ""} placeholder="Manual until configured" onChange={(e) => setPolicyDraft({...policyDraft, [frequency]: e.target.value})}/>
+          <small>Saved: {policies[frequency]?.join(", ") || "Manual only"}</small>
+        </label>)}</div>
+        {policyError && <p role="alert">{policyError}</p>}
+        <button className="secondary-small" onClick={savePolicies}>Save reminder policies</button>
+        <p>For configured frequencies: Owner follow-up one day overdue, then every seven days (days 1, 8, 15…). Controller escalation at day 7. One digest per recipient/day combines eligible controls. Certification stops reminders; acknowledgement does not. Previous 14/7/daily-overdue logs are retained as history, not the current policy.</p>
         <label>
           Simulation date
           <input
@@ -725,8 +784,7 @@ export function ReminderSetup({
         </div>
         <p>
           Only assigned, active, uncertified controls scheduled for {period} are
-          eligible. Overdue messages are generated once per control per
-          simulated day.
+          eligible. Simulating another period on the same date adds eligible controls to the same recipient’s digest. These previews use configured due dates; the period-end versus PEC/YE-close deadline anchor is still awaiting approval.
         </p>
         <label>
           Readiness notice control
@@ -741,9 +799,13 @@ export function ReminderSetup({
               ))}
           </select>
         </label>
+        <p>Controller testing-readiness notices are separate from certification deadlines. Deadline week/day fields never schedule Controller testing.</p>
         <button className="secondary-small" onClick={readiness}>
           Preview readiness notice
         </button>
+        <h3>Controller guidance follow-ups</h3>
+        <p>Simulate a new-request notice on its creation date, then weekly while its status is Open. Answered or resolved requests stop Controller follow-ups.</p>
+        <button className="secondary-small" onClick={previewGuidance}>Preview guidance follow-ups</button>
       </article>
       {!messages.length && (
         <div className="panel empty-state">
@@ -758,7 +820,13 @@ export function ReminderSetup({
             From: {m.sender} via ICEbreaker · To: {m.recipient} · {m.date} ·{" "}
             {m.period}
           </small>
-          <p>{m.body}</p>
+          <p>{m.items ? `${m.items.length} controls requiring attention` : m.body}</p>
+          {m.items?.map((item) => <div key={`${item.period}-${item.controlId}-${item.rule}`} className="guidance-message">
+            <strong>{item.period} · {item.rule}</strong><p>{item.body}</p>
+            <a href={`?control=${encodeURIComponent(item.controlId)}&period=${encodeURIComponent(item.period)}`}>Open this control and period</a>
+          </div>)}
+          {m.rule === "Guidance follow-up" && <a href="?view=guidance">Open Controller guidance inbox</a>}
+          {!m.items && m.rule !== "Guidance follow-up" && <>
           <a
             href={`?control=${encodeURIComponent(m.controlId)}&period=${encodeURIComponent(m.period)}`}
           >
@@ -772,6 +840,7 @@ export function ReminderSetup({
           >
             Preview control in this period
           </button>
+          </>}
           <small>Simulated — not queued or delivered</small>
         </article>
       ))}

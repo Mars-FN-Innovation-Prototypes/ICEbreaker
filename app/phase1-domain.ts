@@ -37,13 +37,40 @@ export type ReminderMessage = {
   rule: string;
   subject: string;
   body: string;
+  audience?: "Owner" | "Controller";
+  items?: { controlId: string; period: string; rule: string; body: string }[];
 };
+export const ATTESTATION_FREQUENCIES = ["Periodic", "Quarterly", "Semi-annual", "Annual", "Event based"];
+export const CONTROL_FREQUENCIES = ["Daily", "Weekly", "Periodic", "Quarterly", "Semi-annual", "Annual", "Event based"];
+export function canonicalAttestation(value: string): string {
+  const key = value.trim().toLowerCase().replace(/[\s_-]/g, "");
+  return ({periodic:"Periodic", quarterly:"Quarterly", annual:"Annual", annually:"Annual", yearly:"Annual", semiannual:"Semi-annual", semiannually:"Semi-annual", halfyearly:"Semi-annual", eventbased:"Event based"} as Record<string, string>)[key] || value.trim();
+}
+export type ReminderPolicies = Record<string, number[]>;
+export const DEFAULT_REMINDER_POLICIES: ReminderPolicies = {
+  Periodic: [7, 2, 0], Quarterly: [14, 7, 2, 0], Annual: [28, 14, 7, 2, 0],
+  "Semi-annual": [], "Event based": [],
+};
+export function frequencyAt(control: InventoryControl, period?: CalendarPeriod): string {
+  if (!period) return control.attestationFrequency;
+  return [...(control.attestationChanges || [])]
+    .filter((change) => change.start <= period.start)
+    .sort((a, b) => b.start.localeCompare(a.start))[0]?.frequency || control.attestationFrequency;
+}
+export function matchingPeople(people: TestPerson[], search: string): TestPerson[] {
+  const words = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  return people.filter((p) => words.every((word) => `${p.name} ${p.email} ${p.unit}`.toLowerCase().includes(word)));
+}
+export function needsGuidanceResponse(request: GuidanceRequest, role: string, user: string) {
+  return role === "Controller Admin" ? request.status === "Open" : request.owner === user && request.status === "Answered";
+}
 export type Phase1State = {
   people: TestPerson[];
   calendar: CalendarPeriod[];
   guidance: GuidanceRequest[];
   rules: ReminderRule[];
   messages: ReminderMessage[];
+  reminderPolicies?: ReminderPolicies;
 };
 export const REMINDER_RULES: ReminderRule[] = [
   "14 days before",
@@ -89,6 +116,7 @@ export const INITIAL_PHASE1: Phase1State = {
   guidance: [],
   rules: REMINDER_RULES,
   messages: [],
+  reminderPolicies: DEFAULT_REMINDER_POLICIES,
 };
 export function isDate(value: string): boolean {
   return (
@@ -151,14 +179,16 @@ export function reminderCandidates(
   controls: InventoryControl[],
   period: string,
   date: string,
-  rules: ReminderRule[],
+  policies: ReminderPolicies,
   sender: string,
 ): ReminderMessage[] {
   if (!isDate(date)) return [];
-  return controls.flatMap((control) => {
+  const candidates: ReminderMessage[] = controls.flatMap((control) => {
     if (
       control.lifecycle !== "Active" ||
       control.status === "Certified" ||
+      control.status === "Not due this period" ||
+      !control.owner ||
       control.owner === "Unassigned" ||
       !isDate(control.due)
     )
@@ -166,32 +196,63 @@ export function reminderCandidates(
     const days = Math.round(
       (Date.parse(control.due) - Date.parse(date)) / 86400000,
     );
-    const rule: ReminderRule | undefined =
-      days === 14
-        ? "14 days before"
-        : days === 7
-          ? "7 days before"
-          : days === 0
-            ? "On deadline"
-            : days < 0
-              ? "Daily overdue"
-              : undefined;
-    if (!rule || !rules.includes(rule)) return [];
-    const key = `${period}::${control.id}::${date}::${rule}`;
+    const schedule = policies[canonicalAttestation(control.attestationFrequency)];
+    if (!schedule?.length) return [];
+    const escalation = days === -7;
+    const rule = days >= 0 && schedule.includes(days)
+      ? days === 0 ? "On deadline" : `${days} days before`
+      : days === -1 || (days < -1 && (-days - 1) % 7 === 0)
+        ? "Overdue follow-up" : escalation ? "Controller escalation" : undefined;
+    if (!rule) return [];
+    const audience = escalation ? "Controller" as const : "Owner" as const;
+    const recipient = escalation ? "Controller team" : control.owner;
+    const key = `${date}::${audience}::${recipient}`;
+    const body = `${control.controlNumber} — ${control.name} (${control.unit}) is due ${control.due}. Owner: ${control.owner}. Status: ${control.status}. ${control.evidenceRequired ? "Evidence is required. " : ""}Ownership acknowledgement alone does not complete certification.`;
     return [
       {
         id: key,
         key,
         controlId: control.id,
         period,
-        recipient: control.owner,
+        recipient,
+        audience,
         sender,
         date,
         rule,
-        subject: `ICEbreaker · ${control.controlNumber} · ${rule}`,
-        body: `${control.name} (${control.unit}) is due ${control.due}. Current status: ${control.status}. ${control.evidenceRequired ? "Evidence is required. " : ""}Please review ownership, the desktop procedure and your execution before certifying.`,
+        subject: `ICEbreaker · ${audience} daily digest · ${date}`,
+        body,
+        items: [{controlId: control.id, period, rule, body}],
       },
     ];
+  });
+  return mergeReminderMessages([], candidates);
+}
+/** One simulated digest per recipient/day; repeat runs and periods merge without duplicate items. */
+export function mergeReminderMessages(existing: ReminderMessage[], incoming: ReminderMessage[]) {
+  const result = [...existing];
+  for (const message of incoming) {
+    const index = result.findIndex((old) => old.key === message.key);
+    if (index < 0) { result.unshift(message); continue; }
+    const old = result[index];
+    // Guidance notices are individual messages, not control digests.
+    if (!old.items && !message.items) continue;
+    const items = [...(old.items || [])];
+    for (const item of message.items || [])
+      if (!items.some((i) => i.controlId === item.controlId && i.period === item.period && i.rule === item.rule)) items.push(item);
+    result[index] = {...old, items};
+  }
+  return result;
+}
+export function guidanceReminders(requests: GuidanceRequest[], date: string, sender: string): ReminderMessage[] {
+  if (!isDate(date)) return [];
+  return requests.filter((r) => r.status === "Open").flatMap((r) => {
+    const days = (Date.parse(date) - Date.parse(r.createdAt.slice(0, 10))) / 86400000;
+    if (days < 0 || days % 7 !== 0) return [];
+    const key = `guidance::${date}::${r.id}`;
+    return [{ id: key, key, controlId: r.controlId, period: r.period,
+      recipient: "Controller team", sender, date, audience: "Controller" as const,
+      rule: "Guidance follow-up", subject: "ICEbreaker · guidance awaiting response",
+      body: `${r.owner}: ${r.question}. Open the Controller inbox to respond. This is separate from control certification reminders.` }];
   });
 }
 export function assignmentReset(

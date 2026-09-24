@@ -50,6 +50,7 @@ export type InventoryControl = {
   description: string;
   frequency: string;
   attestationFrequency: string;
+  attestationChanges?: { period: string; start: string; frequency: string }[];
   dueWeek?: number;
   dueDay?: number;
   regionalInstructions?: string;

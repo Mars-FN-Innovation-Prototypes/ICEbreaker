@@ -39,7 +39,8 @@ No sensitive production data should be entered into the public prototype.
 - Read-only global descriptions with separate local instructions. Validated Controller imports remain the framework maintenance path.
 - IndexedDB file storage (20 MB/file, 150 MB workspace), downloadable DTP/evidence, prior document versions and shared DTP snapshots across unit instances.
 - Controller guidance inbox and Owner conversations with resolution states. Everything stays in one browser; this is not multi-user collaboration.
-- 14/7/deadline/daily-overdue manual reminder simulations with duplicate suppression and readiness notice previews. No background jobs or real emails.
+- Centrally configured, frequency-based reminder simulations: Periodic 7/2/0, Quarterly 14/7/2/0, Annual 28/14/7/2/0 calendar days before/on the deadline. Owner follow-ups on overdue days 1/8/15… and Controller escalation at day 7; daily recipient digests with deduplication. Other frequencies require configuration. Separate readiness and weekly unanswered-guidance previews. No background jobs or real emails.
+- Visible searchable Owner results, predefined frequency choices with effective-period history, safe deletion of unused periods, guidance filters/pending-response badges, and one-step DTP confirmation with a read-only review date.
 - Editable external ServiceNow reference distinct from permanent gap ID, filtered gap extracts, saved-view deletion, and test-data backup/restore including files.
 - Walkthrough: `public/ICEbreaker-Phase-1-Review.html` (linked from Help center).
 

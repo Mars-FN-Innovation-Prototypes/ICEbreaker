@@ -18,7 +18,12 @@ const {
   validateCalendar,
   INITIAL_CALENDAR,
   reminderCandidates,
-  REMINDER_RULES,
+  DEFAULT_REMINDER_POLICIES,
+  mergeReminderMessages,
+  guidanceReminders,
+  matchingPeople,
+  frequencyAt,
+  needsGuidanceResponse,
   assignmentReset,
   isDate,
   csvCell,
@@ -81,20 +86,23 @@ const control = {
   owner: "Demo Account",
   due: "2026-09-30",
   evidenceRequired: true,
+  attestationFrequency: "Quarterly",
 };
-test("reminder cadence includes 14/7/due/daily overdue and skips certified, unassigned, inactive", () => {
+test("frequency policy uses calendar days, weekly overdue and Controller escalation", () => {
   for (const [date, rule] of [
     ["2026-09-16", "14 days before"],
     ["2026-09-23", "7 days before"],
+    ["2026-09-28", "2 days before"],
     ["2026-09-30", "On deadline"],
-    ["2026-10-01", "Daily overdue"],
-    ["2026-10-02", "Daily overdue"],
+    ["2026-10-01", "Overdue follow-up"],
+    ["2026-10-07", "Controller escalation"],
+    ["2026-10-08", "Overdue follow-up"],
   ]) {
     const rows = reminderCandidates(
       [control],
       "Q3 2026",
       date,
-      REMINDER_RULES,
+      DEFAULT_REMINDER_POLICIES,
       "Demo Account",
     );
     assert.equal(rows.length, 1);
@@ -105,18 +113,18 @@ test("reminder cadence includes 14/7/due/daily overdue and skips certified, unas
         [control],
         "Q3 2026",
         date,
-        REMINDER_RULES,
+        DEFAULT_REMINDER_POLICIES,
         "Demo Account",
       )[0].key,
     );
   }
   assert.equal(
-    reminderCandidates([control], "Q3", "2026-09-17", REMINDER_RULES, "Demo")
+    reminderCandidates([control], "Q3", "2026-09-17", DEFAULT_REMINDER_POLICIES, "Demo")
       .length,
     0,
   );
   assert.equal(
-    reminderCandidates([control], "Q3", "2026-09-16", [], "Demo").length,
+    reminderCandidates([control], "Q3", "2026-09-16", {}, "Demo").length,
     0,
   );
   for (const change of [
@@ -130,11 +138,56 @@ test("reminder cadence includes 14/7/due/daily overdue and skips certified, unas
         [{ ...control, ...change }],
         "Q3",
         "2026-10-01",
-        REMINDER_RULES,
+        DEFAULT_REMINDER_POLICIES,
         "Demo",
       ).length,
       0,
     );
+});
+test("reminder digests aggregate controls and periods without duplicates", () => {
+  const run = (frequency, date, extra = {}) => reminderCandidates([{...control, attestationFrequency: frequency, ...extra}], 'P13', date, DEFAULT_REMINDER_POLICIES, 'Controller');
+  assert.equal(run('Periodic', '2026-09-16').length, 0);
+  assert.equal(run('Periodic', '2026-09-23').length, 1);
+  assert.equal(run('Annual', '2026-09-02').length, 1);
+  assert.equal(run('Annually', '2026-09-02').length, 1);
+  assert.equal(run('Semi-annual', '2026-09-23').length, 0);
+  assert.equal(run('Quarterly', '2026-10-02').length, 0);
+  assert.equal(run('Quarterly', '2026-10-07')[0].audience, 'Controller');
+  assert.equal(run('Periodic', '2026-09-28', {accepted: true, understood: true, status: 'Acknowledged'}).length, 1);
+  const one = run('Periodic', '2026-09-23');
+  const two = run('Periodic', '2026-09-23', {id: 'test-2'});
+  const merged = mergeReminderMessages(one, [...one, ...two]);
+  assert.equal(merged.length, 1); assert.equal(merged[0].items.length, 2);
+  const anotherPeriod = reminderCandidates([control], 'Q4', '2026-09-23', DEFAULT_REMINDER_POLICIES, 'Controller');
+  assert.equal(mergeReminderMessages(merged, anotherPeriod)[0].items.length, 3);
+});
+test("five-week Mars periods and effective frequency preserve earlier schedules", () => {
+  const p13 = {id:'Test P13', start:'2026-11-30', end:'2027-01-03', quarterEnd:true, halfEnd:true, yearEnd:true};
+  assert.deepEqual(validateCalendar([p13]), []);
+  assert.equal(scheduledDue({...control, dueWeek:5, dueDay:7}, p13), p13.end);
+  const versioned = {...control, attestationFrequency:'Periodic', attestationChanges:[{period:'Test P13', start:p13.start, frequency:'Annual'}]};
+  assert.equal(frequencyAt(versioned, {start:'2026-11-02'}), 'Periodic');
+  assert.equal(frequencyAt(versioned, p13), 'Annual');
+});
+test("owner search handles whitespace, case and multiple words", () => {
+  const people = [{name:'Demo Owner Two', email:'owner.two@example.test', unit:'OBL'}, {name:'Demo Account',email:'demo@example.test',unit:'All units'}];
+  assert.equal(matchingPeople(people, '  OWNER   TWO ').length, 1);
+  assert.equal(matchingPeople(people, 'demo@example.test')[0].name, 'Demo Account');
+  assert.equal(matchingPeople(people, 'missing').length, 0);
+});
+test("guidance notifications and attention badges are separate from certification", () => {
+  const request = {id:'r1',controlId:'test-1',period:'P13',owner:'Demo Account',question:'Test?',createdAt:'2026-09-01T12:00:00Z',status:'Open',messages:[]};
+  assert.equal(guidanceReminders([request], '2026-09-01', 'Demo').length, 1);
+  assert.equal(guidanceReminders([request], '2026-09-08', 'Demo').length, 1);
+  assert.equal(guidanceReminders([request], '2026-09-09', 'Demo').length, 0);
+  const notices = guidanceReminders([request], '2026-09-08', 'Demo');
+  const repeated = mergeReminderMessages(notices, notices);
+  assert.equal(repeated.length, 1);
+  assert.equal(repeated[0].items, undefined);
+  assert.equal(guidanceReminders([{...request,status:'Answered'}], '2026-09-08', 'Demo').length, 0);
+  assert.equal(needsGuidanceResponse(request,'Controller Admin','Demo'), true);
+  assert.equal(needsGuidanceResponse({...request,status:'Answered'},'Control Owner','Demo Account'), true);
+  assert.equal(needsGuidanceResponse({...request,status:'Answered'},'Control Owner','Other'), false);
 });
 test("reassignment resets acknowledgement but does not overwrite execution/evidence", () => {
   const reset = assignmentReset(control, "Demo Owner Two");

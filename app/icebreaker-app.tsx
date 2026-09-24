@@ -51,6 +51,11 @@ import {
   fileLabel,
   csvCell,
   isDate,
+  ATTESTATION_FREQUENCIES,
+  CONTROL_FREQUENCIES,
+  frequencyAt,
+  canonicalAttestation,
+  needsGuidanceResponse,
 } from "./phase1-domain";
 import { storeLocalFile } from "./local-files";
 import { persistWorkspaceValue } from "./local-state";
@@ -109,7 +114,7 @@ const normalizeControl = (control: InventoryControl): InventoryControl => ({
     control.instructions === control.description
       ? ""
       : control.instructions || "",
-  attestationFrequency: control.attestationFrequency || control.frequency,
+  attestationFrequency: canonicalAttestation(control.attestationFrequency || control.frequency),
   fraudControl: control.fraudControl || false,
   evidenceRequirement: control.evidenceRequirement || "Not scoped",
   evidenceRequired: control.evidenceRequirement === "Required",
@@ -436,7 +441,8 @@ function IcebreakerWorkspace() {
           ...defaultExecution(definition, period),
           due: scheduledDue(definition, calendarPeriod),
         };
-        const merged = { ...definition, ...execution };
+        const merged = { ...definition, ...execution, attestationFrequency:
+          execution.certifiedAt && execution.attestationFrequency ? execution.attestationFrequency : frequencyAt(definition, calendarPeriod) };
         const scheduled =
           dueInPeriod(merged, calendarPeriod) ||
           merged.activatedPeriods?.includes(period) ||
@@ -465,6 +471,14 @@ function IcebreakerWorkspace() {
       c.activatedPeriods?.includes(period) ||
       Boolean(c.acknowledgedAt || c.draftSavedAt || c.certifiedAt),
   );
+  const guidanceCount = phase1.guidance.filter((r) => needsGuidanceResponse(r, role, CURRENT_USER)).length;
+  const protectedPeriods = [...new Set([
+    ...Object.values(executions).map((e) => e.period),
+    ...Object.keys(attachments).map((key) => key.split("::")[0]),
+    ...gaps.map((g) => g.period), ...auditEvents.map((e) => e.period),
+    ...ownershipChanges.map((c) => c.period),
+    ...definitions.flatMap((c) => [...(c.activatedPeriods || []), ...(c.attestationChanges || []).map((f) => f.period)]),
+  ])];
 
   useEffect(() => {
     const hydrate = window.setTimeout(() => {
@@ -605,6 +619,13 @@ function IcebreakerWorkspace() {
     const params = new URLSearchParams(window.location.search);
     const target = params.get("control");
     const targetPeriod = params.get("period");
+    if (params.get("view") === "guidance") {
+      const timer = setTimeout(() => {
+        setActiveNav("Guidance requests");
+        const url = new URL(window.location.href); url.searchParams.delete("view"); history.replaceState(null, "", url);
+      }, 0);
+      return () => clearTimeout(timer);
+    }
     if (!target) return;
     const timer = setTimeout(() => {
       if (
@@ -808,6 +829,7 @@ function IcebreakerWorkspace() {
             [key]: {
               ...(current[key] || {
                 ...defaultExecution(definition, period),
+                attestationFrequency: frequencyAt(definition, phase1.calendar.find((p) => p.id === period)),
                 due: scheduledDue(
                   definition,
                   phase1.calendar.find((p) => p.id === period),
@@ -1006,6 +1028,7 @@ function IcebreakerWorkspace() {
               {item === "My controls" && mine.length > 0 && (
                 <b>{mine.length}</b>
               )}
+              {item === "Guidance requests" && guidanceCount > 0 && <b aria-label={`${guidanceCount} requests awaiting response`}>{guidanceCount}</b>}
             </button>
           ))}
         </nav>
@@ -1230,6 +1253,7 @@ function IcebreakerWorkspace() {
               setScopeConfig={setScopeConfig}
               period={period}
               scheduledControls={scheduledControls}
+              protectedPeriods={protectedPeriods}
               appendAudit={appendAudit}
             />
           )}
@@ -3244,6 +3268,7 @@ function AdminSetup({
   setScopeConfig,
   period,
   scheduledControls,
+  protectedPeriods,
   appendAudit,
 }: {
   controls: InventoryControl[];
@@ -3256,6 +3281,7 @@ function AdminSetup({
   setScopeConfig: (scope: ScopeConfig) => void;
   period: string;
   scheduledControls: InventoryControl[];
+  protectedPeriods: string[];
   appendAudit: (id: string, action: string, detail: string) => void;
 }) {
   const { state: phase1, currentUser: CURRENT_USER } = usePhase1();
@@ -3452,6 +3478,8 @@ function AdminSetup({
           `Row ${index + 2}: Control #, Region, Country and Unit are required`,
         );
       const row = Object.fromEntries(headers.map((h, i) => [h, cells[i]]));
+      if (row["Attestation Frequency"] && !ATTESTATION_FREQUENCIES.includes(canonicalAttestation(row["Attestation Frequency"])))
+        errors.push(`Row ${index + 2}: choose an attestation frequency from ${ATTESTATION_FREQUENCIES.join(", ")}`);
       for (const field of [
         "Evidence Needed (Y/N)",
         "Key Control?",
@@ -3500,6 +3528,8 @@ function AdminSetup({
             `Row ${index + 2}: ${field} must be between 1 and ${max}`,
           );
       const existing = controls.find((c) => c.id === id);
+      if (existing && row["Attestation Frequency"] && canonicalAttestation(row["Attestation Frequency"]) !== canonicalAttestation(existing.attestationFrequency))
+        errors.push(`Row ${index + 2}: change an existing control's attestation frequency in its Controller panel to select an effective period and preview the impact.`);
       if (
         existing &&
         row["Control Owner"] &&
@@ -3785,7 +3815,7 @@ function AdminSetup({
           </button>
         ))}
       </div>
-      {tab === "Calendar" && <CalendarSetup notify={notify} />}
+      {tab === "Calendar" && <CalendarSetup notify={notify} protectedPeriods={protectedPeriods} currentPeriod={period} />}
       {tab === "Test data" && (
         <>
           <TestDirectory notify={notify} />
@@ -4313,6 +4343,7 @@ function ControlDrawer({
     Boolean(control.draftSavedAt),
   );
   const [draft, setDraft] = useState(control);
+  const [frequencyEffectivePeriod, setFrequencyEffectivePeriod] = useState(period);
   const [ownerTask, setOwnerTask] = useState<OwnerTask>("ownership");
   const [showReassign, setShowReassign] = useState(false);
   const [newOwner, setNewOwner] = useState("");
@@ -4336,6 +4367,14 @@ function ControlDrawer({
     question: "",
   });
   const saveAdmin = () => {
+    const frequencyChanged = draft.attestationFrequency !== control.attestationFrequency;
+    const effective = phase1.calendar.find((p) => p.id === frequencyEffectivePeriod);
+    if (frequencyChanged && (!effective || !ATTESTATION_FREQUENCIES.includes(draft.attestationFrequency)))
+      return notify("Choose a listed attestation frequency and effective period.");
+    if (frequencyChanged && control.status === "Certified" && frequencyEffectivePeriod === period)
+      return notify("Choose a future period; completed certification is retained.");
+    if (frequencyChanged && effective && effective.start < (phase1.calendar.find((p) => p.id === period)?.start || ""))
+      return notify("Choose the selected period or a later period for the change.");
     const assignmentChanged = draft.owner !== control.owner;
     if (
       assignmentChanged &&
@@ -4382,7 +4421,6 @@ function ControlDrawer({
       "businessProcess",
       "process",
       "frequency",
-      "attestationFrequency",
       "keyControl",
       "fraudControl",
       "owner",
@@ -4400,6 +4438,12 @@ function ControlDrawer({
     const requirementChanges = Object.fromEntries(
       requirementKeys.map((key) => [key, draft[key]]),
     );
+    if (frequencyChanged && effective) {
+      requirementChanges.attestationChanges = [
+        ...(control.attestationChanges || []).filter((c) => c.period !== effective.id),
+        {period: effective.id, start: effective.start, frequency: draft.attestationFrequency},
+      ];
+    }
     updateControl(control.id, {
       ...requirementChanges,
       due:
@@ -4410,9 +4454,10 @@ function ControlDrawer({
               draft,
               phase1.calendar.find((p) => p.id === period),
             )
-          : draft.due,
+          : isDate(draft.due) ? draft.due : scheduledDue(draft, phase1.calendar.find((p) => p.id === period)),
       ...(assignmentChanged ? assignmentReset(control, draft.owner) : {}),
     });
+    if (frequencyChanged && effective) appendAudit(control.id, "Attestation schedule changed", `${draft.attestationFrequency} effective ${effective.id}. Existing due dates and completed certifications retained; frequency reminder policy inherited.`);
     if (assignmentChanged && control.reassignmentRequested) {
       setOwnershipChanges((current) =>
         current.map((change) =>
@@ -4685,9 +4730,9 @@ function ControlDrawer({
         ? {}
         : {
             documentationReviewed:
-              confirmCurrent && draft.owner === CURRENT_USER,
+              confirmCurrent && role === "Control Owner" && draft.owner === CURRENT_USER,
             documentationReviewedAt:
-              confirmCurrent && draft.owner === CURRENT_USER
+              confirmCurrent && role === "Control Owner" && draft.owner === CURRENT_USER
                 ? new Date().toISOString()
                 : undefined,
           }),
@@ -4698,7 +4743,7 @@ function ControlDrawer({
       `${nextDraft.dtpDocument || "Inline procedure"} · ${nextDraft.dtpVersion || "No version"}`,
     );
     setDraft({ ...nextDraft, dtpStatus, dtpHistory });
-    setDocumentationReviewed(confirmCurrent && draft.owner === CURRENT_USER);
+    setDocumentationReviewed(confirmCurrent && role === "Control Owner" && draft.owner === CURRENT_USER);
     setProgressSaved(false);
     notify(`${controlCode(control)} DTP guidance saved`);
   };
@@ -4874,14 +4919,11 @@ function ControlDrawer({
           Procedure last reviewed
           <input
             type="date"
+            aria-label="Procedure last reviewed"
             value={draft.dtpLastReviewed}
-            onChange={(e) =>
-              setDraft({
-                ...draft,
-                dtpLastReviewed: e.target.value,
-              })
-            }
+            readOnly
           />
+          <small>Recorded automatically when Confirm procedure current is selected.</small>
         </label>
         <label>
           Next review
@@ -5024,11 +5066,6 @@ function ControlDrawer({
               {draft.instructions || "No additional local instructions"}
             </p>
           </div>
-          <p className="field-note">
-            Execution frequency: how often the task is performed. Attestation
-            frequency: when the Owner confirms completion in ICEbreaker.
-            Controller testing is separate.
-          </p>
           <div className="detail-grid">
             <div>
               <span>Sub-process</span>
@@ -5036,10 +5073,12 @@ function ControlDrawer({
             </div>
             <div>
               <span>Control frequency</span>
+              <small>How often the control is performed</small>
               <strong>{draft.frequency}</strong>
             </div>
             <div>
               <span>Attestation frequency</span>
+              <small>How often the Owner confirms completion in ICEbreaker; Controller testing is separate</small>
               <strong>{draft.attestationFrequency}</strong>
               <small>{attestationSchedule(draft.attestationFrequency)}</small>
             </div>
@@ -5268,16 +5307,22 @@ function ControlDrawer({
                   </label>
                   <label>
                     Control frequency
-                    <input
+                    <small>How often the task is performed</small>
+                    <select
                       value={draft.frequency}
                       onChange={(e) =>
                         setDraft({ ...draft, frequency: e.target.value })
                       }
-                    />
+                    >
+                      {!CONTROL_FREQUENCIES.includes(draft.frequency) && <option>{draft.frequency}</option>}
+                      {CONTROL_FREQUENCIES.map((f) => <option key={f}>{f}</option>)}
+                    </select>
                   </label>
                   <label>
                     Attestation frequency
-                    <input
+                    <small>How often the Owner confirms completion in ICEbreaker</small>
+                    <select
+                      aria-label="Attestation frequency"
                       value={draft.attestationFrequency}
                       onChange={(e) =>
                         setDraft({
@@ -5285,8 +5330,18 @@ function ControlDrawer({
                           attestationFrequency: e.target.value,
                         })
                       }
-                    />
+                    >
+                      {!ATTESTATION_FREQUENCIES.includes(draft.attestationFrequency) && <option>{draft.attestationFrequency}</option>}
+                      {ATTESTATION_FREQUENCIES.map((f) => <option key={f}>{f}</option>)}
+                    </select>
                   </label>
+                  {draft.attestationFrequency !== control.attestationFrequency && <label>Frequency effective period
+                    <select value={frequencyEffectivePeriod} onChange={(e) => setFrequencyEffectivePeriod(e.target.value)}>
+                      {phase1.calendar.filter((p) => p.start >= (phase1.calendar.find((c) => c.id === period)?.start || "") && (control.status !== "Certified" || p.id !== period)).map((p) => <option key={p.id}>{p.id}</option>)}
+                    </select>
+                    <small>Preview: this instance ({control.controlNumber} · {control.unit}) inherits {draft.attestationFrequency} reminders from {frequencyEffectivePeriod}. Existing due dates and certifications are retained. Add the next approved period in Calendar if needed.</small>
+                    <ul className="frequency-preview">{phase1.calendar.filter((p) => p.start >= (phase1.calendar.find((c) => c.id === frequencyEffectivePeriod)?.start || "")).map((p) => <li key={p.id}>{p.id}: {dueInPeriod(draft, p) ? `scheduled; default deadline ${scheduledDue(draft, p)}` : "not normally due"}. Existing saved dates take precedence.</li>)}</ul>
+                  </label>}
                 </div>
                 <div className="admin-check-grid">
                   <label className="admin-check">
@@ -5861,27 +5916,10 @@ function ControlDrawer({
                       </div>
                     )}
                   </section>
-                  <label className="check-card documentation-check">
-                    <input
-                      type="checkbox"
-                      checked={documentationReviewed}
-                      disabled={
-                        !isAssignedOwner || draft.dtpStatus !== "Current"
-                      }
-                      onChange={(e) => {
-                        setDocumentationReviewed(e.target.checked);
-                        setProgressSaved(false);
-                      }}
-                    />
-                    <span>
-                      <strong>I reviewed the current desktop procedure</strong>
-                      <small>
-                        {draft.dtpStatus !== "Current"
-                          ? "A current DTP must be added before this confirmation is available."
-                          : "Confirm that you have reviewed the procedure. Confirming it current below also records your review when you own this control."}
-                      </small>
-                    </span>
-                  </label>
+                  <div className="check-card documentation-check" role="status">
+                    <span><strong>{documentationReviewed ? "Your procedure review is confirmed" : "Your procedure review is not yet confirmed"}</strong>
+                    <small>Use Confirm procedure current above to record your review and the review date in one step. This does not certify the control.</small></span>
+                  </div>
                   <div className="execution-confirmation">
                     <span className="section-kicker">
                       Execution confirmation

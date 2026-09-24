@@ -74,7 +74,7 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /Save draft/);
   assert.match(page, /partial draft/i);
   assert.match(page, /Performed with deviations/);
-  assert.match(page, /I reviewed the current desktop procedure/);
+  assert.match(page, /Your procedure review is confirmed/);
   assert.match(page, /Previous-period evidence/);
   assert.match(page, /No prior-period evidence is available/);
   assert.match(page, /SharePoint or evidence link/);
