@@ -53,7 +53,18 @@ Keep existing browser storage version `stakeholder-feedback-v2` to preserve prio
 ## Local development
 
 ```sh
-npm install
+npm ci --ignore-scripts
 npm run dev
-npm test
+npm run check
+npm run audit
 ```
+
+## Hardening and enterprise readiness
+
+The frontend uses standard React/TypeScript/Vite. There is no production backend, SSO or shared database yet; unused Next/vinext/RSC/Cloudflare starter code was removed. The public prototype is not an enterprise access boundary. Explicit enterprise/production builds are blocked pending integration.
+
+See [the readiness review and Azure handoff](docs/ENTERPRISE_READINESS.md) and [security boundary](SECURITY.md). Existing browser keys/version are retained. Malformed data or unsupported versions now open a recovery screen instead of resetting records. Multi-tab conflicts pause edits. Imports/backups are bounded and validated; document IDs cannot overwrite different retained evidence. These are prototype safeguards, not authoritative audit, malware scanning or secure multi-user storage.
+
+`npm run preview` serves the built artifact locally on port 4178 (not for production). Run `npm run test:ui` against that address with `ICEBREAKER_TEST_URL`; Playwright Chromium must be installed. `npm run build:github-pages` and `npm run release:check` prepare/check the existing Pages path. The read-only GitHub CI workflow does not deploy or contain cloud credentials.
+
+`npm run perf:baseline` writes a synthetic local-domain timing report under `work/qa`. It is not a production load test or SLA.

@@ -1,18 +1,65 @@
-import { defineConfig, globalIgnores } from "eslint/config";
-import nextVitals from "eslint-config-next/core-web-vitals";
-import nextTs from "eslint-config-next/typescript";
-
-const eslintConfig = defineConfig([
-  ...nextVitals,
-  ...nextTs,
-  // Override default ignores of eslint-config-next.
-  globalIgnores([
-    // Default ignores of eslint-config-next:
-    ".next/**",
-    "out/**",
-    "build/**",
-    "next-env.d.ts",
-  ]),
-]);
-
-export default eslintConfig;
+import js from "@eslint/js";
+import ts from "typescript-eslint";
+import hooks from "eslint-plugin-react-hooks";
+export default ts.config(
+  { ignores: ["dist/**", "work/**", "node_modules/**"] },
+  js.configs.recommended,
+  ...ts.configs.recommended,
+  {
+    languageOptions: {
+      globals: Object.fromEntries(
+        [
+          "window",
+          "document",
+          "localStorage",
+          "sessionStorage",
+          "indexedDB",
+          "IDBRequest",
+          "IDBDatabase",
+          "IDBObjectStore",
+          "IDBTransactionMode",
+          "Storage",
+          "StorageEvent",
+          "File",
+          "FileReader",
+          "Blob",
+          "URL",
+          "URLSearchParams",
+          "crypto",
+          "Event",
+          "CustomEvent",
+          "console",
+          "setTimeout",
+          "clearTimeout",
+          "history",
+          "atob",
+          "btoa",
+          "fetch",
+          "TextDecoder",
+          "TextEncoder",
+          "HTMLElement",
+          "HTMLInputElement",
+          "HTMLAnchorElement",
+          "HTMLTextAreaElement",
+          "process",
+          "Buffer",
+          "structuredClone",
+          "navigator",
+          "performance",
+        ].map((key) => [key, "readonly"]),
+      ),
+    },
+  },
+  {
+    files: ["app/**/*.{ts,tsx}"],
+    plugins: { "react-hooks": hooks },
+    rules: {
+      "react-hooks/rules-of-hooks": "error",
+      "react-hooks/exhaustive-deps": "warn",
+    },
+  },
+  {
+    files: ["**/*.mjs"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
+);

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdir, readFile } from "node:fs/promises";
-import writeXlsxFile from "write-excel-file/node";
+import writeWorkbook from "write-excel-file/node";
+const writeXlsxFile = (data) => writeWorkbook(data).toBuffer();
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_PATH || "playwright");
 const browser = await chromium.launch({ headless: true });
@@ -13,7 +14,7 @@ const page = await context.newPage();
 const errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
 page.on("dialog", (dialog) => dialog.accept());
-const base = process.env.ICEBREAKER_TEST_URL || "http://localhost:5173";
+const base = (process.env.ICEBREAKER_TEST_URL || "http://localhost:4178").replace(/\/?$/, "/");
 await mkdir("work/qa", { recursive: true });
 const store = (key) =>
   page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "null"), key);
@@ -308,6 +309,23 @@ try {
     "Demo Owner Two",
   );
   console.log("PASS complete backup and restore round trip");
+  await nav("Admin setup");
+  await page.getByRole("button", {name:"Test data",exact:true}).click();
+  const conflicting=structuredClone(backup);
+  conflicting.files[0].data="data:text/plain;base64,"+Buffer.from("Different bytes under existing ID").toString("base64");
+  await page.getByLabel("Choose backup").setInputFiles({name:"conflicting-backup.json",mimeType:"application/json",buffer:Buffer.from(JSON.stringify(conflicting))});
+  await page.getByRole("button",{name:"Restore this backup"}).click();
+  await page.getByText(/Backup document conflicts with existing evidence/).waitFor();
+  const preservedDownload=page.waitForEvent("download");
+  await page.getByRole("button",{name:"Export test workspace with documents"}).click();
+  const preserved=JSON.parse(await readFile(await (await preservedDownload).path(),"utf8"));
+  assert.equal(preserved.files.find(f=>f.id===backup.files[0].id).data,backup.files[0].data);
+  assert.equal((await store("icebreaker-executions"))[key].owner,"Demo Owner Two");
+  const missing=structuredClone(backup);missing.files=[];
+  await page.getByLabel("Choose backup").setInputFiles({name:"missing-files.json",mimeType:"application/json",buffer:Buffer.from(JSON.stringify(missing))});
+  await page.getByText(/Backup is missing referenced evidence or procedure files/).waitFor();
+  assert.equal(await page.getByRole("button",{name:"Restore this backup"}).count(),0);
+  console.log("PASS conflicting and incomplete backups cannot replace retained evidence");
   await nav("Reports");
   await page
     .getByRole("button", {
@@ -609,7 +627,7 @@ try {
   assert.equal((await store('icebreaker-gaps'))[0].id,gapId);
   assert.equal((await store('icebreaker-gaps'))[0].serviceNowReference,'SNOW-TEST-001');
   console.log('PASS gap lifecycle, closure safeguards and independent ServiceNow reference');
-  await page.goto(`${base}/ICEbreaker-Phase-1-Review.html`);
+  await page.goto(new URL("ICEbreaker-Phase-1-Review.html",base).href);
   await page.screenshot({path:'work/qa/review-guide.png',fullPage:true});
   assert.ok(await page.getByRole('heading',{name:'Before you begin'}).isVisible());
   assert.deepEqual(errors,[]);

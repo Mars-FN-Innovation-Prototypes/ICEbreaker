@@ -8,8 +8,9 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import readXlsxFile from "read-excel-file";
-import writeXlsxFile from "write-excel-file";
+import { readXlsxFile, writeXlsxFile } from "./spreadsheets";
+import { safeExternalUrl, validateDocument, MAX_FILE_BYTES } from "./input-safety";
+import { validateWorkspace, WORKSPACE_KEYS } from "./workspace-validation";
 import type { InventoryControl } from "./inventory-controls";
 import {
   INITIAL_PHASE1,
@@ -34,7 +35,7 @@ import {
   restoreLocalFiles,
   type LocalFile,
 } from "./local-files";
-import { persistWorkspaceValue, workspaceSnapshot } from "./local-state";
+import { persistWorkspaceValue, workspaceSnapshot, readWorkspace, blockWorkspaceWrites } from "./local-state";
 
 type Phase1ContextType = {
   state: Phase1State;
@@ -56,7 +57,7 @@ export function Phase1Provider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const report = () =>
       setStorageError(
-        "Browser storage is full or unavailable. Keep this tab open and export a backup from Admin setup → Test data to preserve your current work.",
+        "Changes could not be saved safely: browser storage may be full/unavailable or a value may exceed supported limits. Keep this tab open and export a backup from Admin setup → Test data to preserve your current work.",
       );
     window.addEventListener("icebreaker-storage-error", report);
     return () => window.removeEventListener("icebreaker-storage-error", report);
@@ -64,6 +65,7 @@ export function Phase1Provider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const timer = setTimeout(() => {
       try {
+        readWorkspace();
         const raw = localStorage.getItem("icebreaker-phase1");
         if (raw) {
           const saved = JSON.parse(raw);
@@ -78,9 +80,11 @@ export function Phase1Provider({ children }: { children: ReactNode }) {
             setState({...saved, reminderPolicies: saved.reminderPolicies || DEFAULT_REMINDER_POLICIES});
         }
       } catch {
+        blockWorkspaceWrites();
         setStorageError(
           "Saved test settings could not be loaded. Restore a valid backup before continuing.",
         );
+        return;
       }
       setReady(true);
     }, 0);
@@ -203,8 +207,8 @@ export function LocalFileLink({ reference }: { reference: string }) {
         <button className="text-link" disabled={busy} onClick={download}>
           ⇩ {fileLabel(reference)}
         </button>
-      ) : /^https?:\/\//i.test(reference) ? (
-        <a href={reference} target="_blank" rel="noreferrer">
+      ) : safeExternalUrl(reference) ? (
+        <a href={safeExternalUrl(reference)!} target="_blank" rel="noopener noreferrer">
           {reference}
         </a>
       ) : (
@@ -1140,6 +1144,8 @@ export function BackupPanel({ notify }: { notify: (message: string) => void }) {
           allowed.includes(key),
         ),
       ) as Record<string, string>;
+      if (Object.keys(parsed.metadata).some((key)=>!(WORKSPACE_KEYS as readonly string[]).includes(key))) throw new Error("Unsupported backup metadata.");
+      validateWorkspace(metadata, true);
       for (const [key, value] of Object.entries(metadata)) {
         if (typeof value !== "string")
           throw new Error("Invalid backup metadata");
@@ -1168,6 +1174,9 @@ export function BackupPanel({ notify }: { notify: (message: string) => void }) {
           validateCalendar(p1.calendar).length)
       )
         throw new Error("Backup has invalid Phase 1 settings");
+      if (parsed.files.length > 5000) throw new Error("Too many documents in backup.");
+      const ids = new Set<string>();
+      let totalBytes = 0;
       const files: LocalFile[] = parsed.files.map(
         (f: {
           id: string;
@@ -1177,18 +1186,28 @@ export function BackupPanel({ notify }: { notify: (message: string) => void }) {
           createdAt: string;
         }) => {
           if (
-            !f.id ||
+            typeof f.id !== "string" || !/^[A-Za-z0-9-]{1,100}$/.test(f.id) || ids.has(f.id) ||
             !f.name ||
             typeof f.data !== "string" ||
-            !/^data:[^,]*;base64,/.test(f.data)
+            !/^data:[^,]*;base64,[A-Za-z0-9+/]*={0,2}$/.test(f.data) ||
+            f.data.length > Math.ceil(MAX_FILE_BYTES * 4 / 3) + 500 || typeof f.createdAt !== "string"
           )
             throw new Error("Invalid document in backup");
+          ids.add(f.id);
           const bytes = Uint8Array.from(atob(f.data.split(",")[1]), (c) =>
             c.charCodeAt(0),
           );
-          return { ...f, data: new Blob([bytes], { type: f.type }) };
+          totalBytes += bytes.length;
+          if(totalBytes > 150*1024*1024) throw new Error("Backup document total exceeds 150 MB.");
+          return { id:f.id, name:f.name, createdAt:f.createdAt, type:f.type, data: new Blob([bytes], { type: f.type }) };
         },
       );
+      for (const file of files) {
+        file.type = await validateDocument(Object.assign(file.data,{name:file.name}));
+        file.data = new Blob([file.data],{type:file.type});
+      }
+      const references = JSON.stringify(metadata).match(/ice-file:([A-Za-z0-9-]+):/g) || [];
+      if (references.some(ref=>!ids.has(ref.split(":")[1]))) throw new Error("Backup is missing referenced evidence or procedure files.");
       setPreview({ metadata, files });
     } catch (e) {
       notify(e instanceof Error ? e.message : "Invalid backup");
@@ -1216,10 +1235,9 @@ export function BackupPanel({ notify }: { notify: (message: string) => void }) {
         localStorage.setItem(key, value);
       window.location.reload();
     } catch (e) {
-      for (const [key, value] of Object.entries(old)) {
-        if (value === null) localStorage.removeItem(key);
-        else localStorage.setItem(key, value);
-      }
+      try { for (const [key, value] of Object.entries(old)) {
+        if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value);
+      } } catch { blockWorkspaceWrites(); notify("Restore and rollback failed. Keep this tab open, export recovery data and contact support."); setBusy(false); return; }
       notify(
         e instanceof Error
           ? e.message
