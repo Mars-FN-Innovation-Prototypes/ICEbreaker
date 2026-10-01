@@ -28,6 +28,7 @@
 .schedule-fields p { line-height: 1.65; margin-bottom: 10px; }
 .control-description { margin: 18px 0; border: 1px solid #dcdbe9; padding: 16px; border-radius: 10px; background: #f9f9ff; }
 .control-description summary { font-weight: 700; color: #0000a0; cursor: pointer; }
+.control-description summary:focus-visible { outline: 2px solid var(--mars-blue); outline-offset: 4px; border-radius: 3px; }
 .control-description p { font-size: 13px; line-height: 1.65; margin-top: 12px; }
 .local-instructions { margin: 12px 0; font-size: 13px; line-height: 1.65; }
 .local-instructions strong { color: #19738d; }
@@ -3075,6 +3076,22 @@ tbody tr:hover {
   display: grid;
   gap: 16px;
 }
+
+.gap-action-editor { display: grid; gap: 10px; margin: 16px 20px; }
+.gap-action-editor label { display: grid; gap: 8px; color: var(--mars-blue); font-size: 12px; font-weight: 800; }
+.gap-action-editor textarea { width: 100%; min-height: 100px; resize: vertical; padding: 12px; border: 1px solid #ded6cf; border-radius: 8px; background: white; color: #3c3c3c; font: 400 13px/1.6 "Mars Centra", Arial, sans-serif; }
+.gap-action-editor small { color: var(--charcoal); line-height: 1.5; }
+.gap-action-editor > div { display: flex; flex-wrap: wrap; gap: 10px; }
+.gap-create .report-filters, .gap-list .report-filters { align-items: start; }
+.gap-create .report-filters label, .gap-list .report-filters label { align-content: start; }
+.gap-create .owner-picker, .gap-list .owner-picker { margin: 0; }
+.gap-create > label { margin: 12px 20px; }
+.gap-create > label input, .gap-create > label textarea,
+.gap-create .report-filters input:not([type=checkbox]), .gap-list .report-filters input:not([type=checkbox]) {
+  width: 100%; padding: 10px 12px; border: 1px solid #ded6cf; border-radius: 8px;
+  background: white; color: #3c3c3c; font: 400 13px/1.5 "Mars Centra", Arial, sans-serif;
+}
+.gap-create > .primary-small { margin: 0 20px 16px; }
 
 .gap-create > label,
 .reassign-form label {

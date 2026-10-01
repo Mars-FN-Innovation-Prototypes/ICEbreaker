@@ -60,6 +60,16 @@ try {
     .first()
     .click();
   let drawer = page.getByLabel("Control detail panel");
+  for (const title of ["Global control description", "Unit instructions"]) {
+    const section = drawer.locator("details.control-description").filter({has: page.locator("summary", {hasText:title})});
+    assert.equal(await section.getAttribute("open"), null);
+    await section.locator("summary").press("Enter");
+    assert.equal(await section.getAttribute("open"), "");
+    assert.ok(await section.locator("p").isVisible());
+    await section.locator("summary").click();
+    assert.equal(await section.getAttribute("open"), null);
+  }
+  console.log("PASS instruction sections start collapsed and support keyboard expansion");
   await drawer
     .getByRole("checkbox", { name: /I confirm and accept ownership/ })
     .check();
@@ -98,6 +108,11 @@ try {
       .isVisible(),
   );
   console.log("PASS separate acknowledgement persists without execution");
+  assert.equal(await drawer.locator("details.control-description[open]").count(), 0);
+  await drawer.getByRole("button", {name:/Support & certify/}).click();
+  await drawer.getByText(/Controller action needed:.*Save control requirements/).waitFor();
+  assert.equal(await drawer.getByRole("button", {name:"Certify control",exact:true}).isDisabled(),true);
+  console.log("PASS unscoped evidence stays blocked with actionable Controller instructions");
   await drawer.getByRole("button", { name: /Procedure & execution/ }).click();
   assert.equal(await drawer.getByLabel("Procedure last reviewed", {exact:true}).getAttribute("readonly"), "");
   assert.equal(await drawer.getByRole("checkbox", {name:/I reviewed the current/}).count(), 0);
@@ -182,14 +197,18 @@ try {
   await drawer
     .getByRole("combobox", { name: "New Control Owner", exact: true })
     .selectOption("Demo Owner Two");
+  await drawer.getByRole("button",{name:"Submit reassignment request",exact:true}).click();
+  assert.equal((await store("icebreaker-ownership-changes")).length,0);
+  assert.equal(await drawer.locator(".owner-reassign-form").getByRole("checkbox").count(),1);
   await drawer
     .getByRole("checkbox", {
-      name: /I have completed the responsibility handover/,
+      name: /I confirm that I have handed over control responsibilities and trained the new control owner/,
     })
     .check();
-  await drawer
-    .getByRole("checkbox", { name: /I have completed training/ })
-    .check();
+  await drawer.getByRole("combobox",{name:"New Control Owner",exact:true}).selectOption("Demo Account");
+  await drawer.getByRole("combobox",{name:"New Control Owner",exact:true}).selectOption("Demo Owner Two");
+  assert.equal(await drawer.locator(".owner-reassign-form").getByRole("checkbox").isChecked(),false);
+  await drawer.locator(".owner-reassign-form").getByRole("checkbox").check();
   await drawer
     .getByRole("button", { name: "Submit reassignment request", exact: true })
     .click();
@@ -197,6 +216,10 @@ try {
     (await store("icebreaker-executions"))[key].owner,
     "Demo Account",
   );
+  const pendingRequest = (await store("icebreaker-ownership-changes"))[0];
+  assert.equal(pendingRequest.handoverConfirmed, true);
+  assert.equal(pendingRequest.trainingConfirmed, true);
+  assert.equal(pendingRequest.status, "Requested");
   await close();
   await profile("Controller Admin");
   await nav("Controls library");
@@ -208,6 +231,12 @@ try {
   await drawer
     .getByRole("button", { name: "Approve reassignment", exact: true })
     .click();
+  await drawer.getByRole("button", {name:"Log a gap",exact:true}).click();
+  const gapDialog = page.getByRole("dialog");
+  await gapDialog.getByRole("textbox", {name:"Search Remediation owner",exact:true}).fill("owner.two");
+  await gapDialog.getByRole("button", {name:/Demo Owner Two/}).click();
+  assert.equal(await gapDialog.getByRole("combobox", {name:"Remediation owner",exact:true}).inputValue(),"Demo Owner Two");
+  await gapDialog.getByRole("button", {name:"Close request form",exact:true}).click();
   const reassigned = (await store("icebreaker-executions"))[key];
   assert.equal(reassigned.owner, "Demo Owner Two");
   assert.equal(reassigned.accepted, false);
@@ -408,6 +437,30 @@ try {
       .isChecked(),
     false,
   );
+  drawer = page.getByLabel("Control detail panel");
+  await drawer.getByRole("checkbox",{name:/I confirm and accept ownership/}).check();
+  await drawer.getByRole("checkbox",{name:/I understand the requirement/}).check();
+  await drawer.getByRole("button",{name:"Acknowledge & save",exact:true}).click();
+  await drawer.getByRole("button",{name:/Procedure & execution/}).click();
+  await drawer.getByRole("button",{name:"Confirm procedure current",exact:true}).click();
+  await drawer.getByRole("combobox",{name:"Execution outcome",exact:true}).selectOption("Performed as documented");
+  await drawer.getByRole("button",{name:"Save draft",exact:true}).first().click();
+  await drawer.getByRole("button",{name:/Support & certify/}).click();
+  await drawer.getByText("Attach the required execution evidence.",{exact:true}).waitFor();
+  assert.equal(await drawer.getByRole("button",{name:"Certify control",exact:true}).isDisabled(),true);
+  await close();
+  await profile("Controller Admin");
+  await nav("Controls library");
+  await page.getByText("Review of Completed Questionnaires in Enablon",{exact:true}).first().click();
+  drawer = page.getByLabel("Control detail panel");
+  await drawer.getByRole("combobox",{name:/Evidence requirement/}).selectOption("Not required");
+  await drawer.getByRole("button",{name:"Save control requirements",exact:true}).click();
+  await close();
+  await profile("Control Owner","Demo Owner Two");
+  await page.getByRole("button",{name:/Review of Completed Questionnaires in Enablon.*OBL/}).first().click();
+  drawer = page.getByLabel("Control detail panel");
+  assert.equal(await drawer.getByRole("button",{name:"Certify control",exact:true}).isEnabled(),true);
+  console.log("PASS Required blocks missing period evidence and saved Not required removes only that gate");
   await close();
   console.log(
     "PASS certification, safe admin correction and fresh period confirmations",
@@ -614,9 +667,30 @@ try {
   await gapForm.getByRole('textbox', {name:'Gap title', exact:true}).fill('Synthetic gap validation');
   await gapForm.getByLabel('Target date', {exact:true}).fill('2027-04-01');
   await gapForm.getByRole('textbox', {name:'Remediation action',exact:true}).fill('Review and correct the synthetic source data.');
+  await gapForm.getByRole('textbox', {name:'Search Remediation owner',exact:true}).fill('owner.two');
+  await gapForm.getByRole('button', {name:/Demo Owner Two/}).click();
   await gapForm.getByRole('button', {name:'Create remediation'}).click();
   const gapCard = page.locator('.gap-list article').first();
   const gapId = (await store('icebreaker-gaps'))[0].id;
+  assert.equal((await store('icebreaker-gaps'))[0].owner,'Demo Owner Two');
+  const actionPlan = gapCard.getByRole('textbox',{name:'Remediation action plan',exact:true});
+  await actionPlan.fill('Unsaved test change');
+  assert.equal((await store('icebreaker-gaps'))[0].description,'Review and correct the synthetic source data.');
+  await gapCard.getByRole('button',{name:'Cancel changes',exact:true}).click();
+  assert.equal(await actionPlan.inputValue(),'Review and correct the synthetic source data.');
+  await actionPlan.fill('');
+  assert.equal(await gapCard.getByRole('button',{name:'Save action plan',exact:true}).isDisabled(),true);
+  await actionPlan.fill('Reconcile the source data, document exceptions, and review the correction.');
+  await gapCard.getByRole('button',{name:'Save action plan',exact:true}).click();
+  await gapCard.getByRole('textbox',{name:'Search Remediation owner',exact:true}).fill('test120');
+  await gapCard.getByRole('button',{name:/Demo Test 120/}).click();
+  await gapCard.getByLabel('Target date',{exact:true}).fill('2027-04-08');
+  await nav('Control tower');
+  await nav('Gap remediation');
+  assert.equal(await actionPlan.inputValue(),'Reconcile the source data, document exceptions, and review the correction.');
+  assert.equal((await store('icebreaker-gaps'))[0].owner,'Demo Test 120');
+  assert.equal((await store('icebreaker-gaps'))[0].due,'2027-04-08');
+  assert.ok((await store('icebreaker-audit-events')).some((event)=>event.action==='Gap action plan updated'));
   await gapCard.getByRole('textbox', {name:/ServiceNow reference/}).fill('SNOW-TEST-001');
   await gapCard.getByRole('combobox', {name:/^Status/}).selectOption('Closed');
   assert.equal((await store('icebreaker-gaps'))[0].status,'Open');
@@ -626,6 +700,14 @@ try {
   assert.equal((await store('icebreaker-gaps'))[0].status,'Closed');
   assert.equal((await store('icebreaker-gaps'))[0].id,gapId);
   assert.equal((await store('icebreaker-gaps'))[0].serviceNowReference,'SNOW-TEST-001');
+  await actionPlan.fill('Updated plan after closure, requiring a fresh review.');
+  await gapCard.getByRole('button',{name:'Save action plan',exact:true}).click();
+  assert.equal((await store('icebreaker-gaps'))[0].status,'Ready for closure');
+  assert.equal((await store('icebreaker-gaps'))[0].controllerApproved,false);
+  assert.equal((await store('icebreaker-gaps'))[0].closureEvidence,'https://example.test/closure');
+  assert.equal((await store('icebreaker-gaps'))[0].id,gapId);
+  await page.screenshot({path:'work/qa/gap-action-plan.png',fullPage:true});
+  console.log('PASS editable action plans, cancel/save, searchable gap owners and fresh closure approval');
   console.log('PASS gap lifecycle, closure safeguards and independent ServiceNow reference');
   await page.goto(new URL("ICEbreaker-Phase-1-Review.html",base).href);
   await page.screenshot({path:'work/qa/review-guide.png',fullPage:true});
