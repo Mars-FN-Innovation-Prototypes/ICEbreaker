@@ -2992,6 +2992,31 @@ function SiteOwnerDashboard({
   );
 }
 
+function GapActionEditor({ description, onSave }: {
+  description: string;
+  onSave: (description: string) => void;
+}) {
+  const [action, setAction] = useState(description);
+  const changed = action.trim() !== description;
+  return (
+    <div className="gap-action-editor">
+      <label>
+        Remediation action plan
+        <textarea rows={4} maxLength={50000} value={action}
+          onChange={(event) => setAction(event.target.value)}
+          placeholder="What needs to change, and what will good closure look like?" />
+      </label>
+      <small>Save changes to update the plan. A changed plan requires fresh Controller closure approval.</small>
+      <div>
+        <button className="primary-small" disabled={!changed || !action.trim()}
+          onClick={() => onSave(action.trim())}>Save action plan</button>
+        <button className="secondary-small" disabled={action === description}
+          onClick={() => setAction(description)}>Cancel changes</button>
+      </div>
+    </div>
+  );
+}
+
 function GapRemediation({
   gaps,
   controls,
@@ -3114,13 +3139,8 @@ function GapRemediation({
               <option>Critical</option>
             </select>
           </label>
-          <label>
-            Remediation owner
-            <input
-              value={newGap.owner}
-              onChange={(e) => setNewGap({ ...newGap, owner: e.target.value })}
-            />
-          </label>
+          <OwnerPicker label="Remediation owner" value={newGap.owner}
+            onChange={(owner) => setNewGap({ ...newGap, owner })} />
           <label>
             Target date
             <input
@@ -3168,7 +3188,12 @@ function GapRemediation({
                 {gap.status}
               </span>
             </div>
-            <p>{gap.description || "Remediation detail to be confirmed."}</p>
+            <GapActionEditor key={`${gap.id}:${gap.description}`} description={gap.description}
+              onSave={(description) => {
+                updateGap(gap.id, { description, controllerApproved: false });
+                appendAudit(gap.controlId, "Gap action plan updated", `Gap ${gap.id}: plan revised; previous Controller closure approval cleared.`);
+                notify("Action plan saved. Controller closure approval is required for the updated plan.");
+              }} />
             <div className="detail-grid">
               <div>
                 <span>Owner</span>
@@ -4360,7 +4385,6 @@ function ControlDrawer({
   const [showReassign, setShowReassign] = useState(false);
   const [newOwner, setNewOwner] = useState("");
   const [handover, setHandover] = useState(false);
-  const [training, setTraining] = useState(false);
   const [evidenceLink, setEvidenceLink] = useState("");
   const [requestModal, setRequestModal] = useState<"gap" | "guidance" | null>(
     null,
@@ -4508,7 +4532,7 @@ function ControlDrawer({
       notify("Choose a different configured test account");
       return;
     }
-    if (!newOwner.trim() || !handover || !training) {
+    if (!newOwner.trim() || !handover) {
       notify("New owner, handover and training confirmation are required");
       return;
     }
@@ -4521,7 +4545,7 @@ function ControlDrawer({
       requestedBy: CURRENT_USER,
       changedAt: new Date().toISOString(),
       handoverConfirmed: handover,
-      trainingConfirmed: training,
+      trainingConfirmed: handover,
       status: "Requested",
     };
     setOwnershipChanges((current) => [change, ...current]);
@@ -4868,7 +4892,7 @@ function ControlDrawer({
       ? "A reassignment request is awaiting Controller review."
       : "",
     draft.evidenceRequirement === "Not scoped"
-      ? "The Controller must scope the evidence requirement."
+      ? 'Controller action needed: open this control as Controller Admin, set Evidence requirement to "Required" or "Not required", then select "Save control requirements". Reopen the control as its Control Owner and retry certification. If evidence is required, attach it first.'
       : "",
     !(
       executionOutcome === "Performed as documented" ||
@@ -5060,24 +5084,24 @@ function ControlDrawer({
               ? "Configure ownership, timing, evidence rules and guidance for this control."
               : "Accept ownership, follow the documented procedure and certify completion."}
           </p>
-          <details className="control-description" open>
+          <details className="control-description">
             <summary>Global control description</summary>
             <p className="preserve-lines">
               {draft.description || "Description not supplied"}
             </p>
           </details>
           {draft.regionalInstructions && (
-            <div className="local-instructions">
-              <strong>Regional guidance</strong>
+            <details className="control-description local-instructions">
+              <summary>Regional guidance</summary>
               <p className="preserve-lines">{draft.regionalInstructions}</p>
-            </div>
+            </details>
           )}
-          <div className="local-instructions">
-            <strong>Unit instructions</strong>
+          <details className="control-description local-instructions">
+            <summary>Unit instructions</summary>
             <p className="preserve-lines">
               {draft.instructions || "No additional local instructions"}
             </p>
-          </div>
+          </details>
           <div className="detail-grid">
             <div>
               <span>Sub-process</span>
@@ -5438,8 +5462,9 @@ function ControlDrawer({
                     <option>Not required</option>
                   </select>
                   <small className="field-note">
-                    Set explicitly here or through mass upload; the app never
-                    infers this rule.
+                    Choose Required or Not required, then Save control requirements.
+                    Not scoped blocks certification. You can also set this explicitly
+                    through mass upload; the app never infers this rule.
                   </small>
                 </label>
                 <label>
@@ -5707,7 +5732,7 @@ function ControlDrawer({
                         <OwnerPicker
                           label="New Control Owner"
                           value={newOwner}
-                          onChange={setNewOwner}
+                          onChange={(owner) => { setNewOwner(owner); setHandover(false); }}
                           allowUnassigned={false}
                         />
                       </label>
@@ -5717,15 +5742,7 @@ function ControlDrawer({
                           checked={handover}
                           onChange={(e) => setHandover(e.target.checked)}
                         />
-                        I have completed the responsibility handover
-                      </label>
-                      <label className="admin-check">
-                        <input
-                          type="checkbox"
-                          checked={training}
-                          onChange={(e) => setTraining(e.target.checked)}
-                        />
-                        I have completed training and the procedure walkthrough
+                        I confirm that I have handed over control responsibilities and trained the new control owner on the execution and evidence requirements.
                       </label>
                       <button className="primary-button" onClick={reassign}>
                         Submit reassignment request
@@ -6204,15 +6221,8 @@ function ControlDrawer({
                       <option>Critical</option>
                     </select>
                   </label>
-                  <label>
-                    Remediation owner
-                    <input
-                      value={gapRequest.owner}
-                      onChange={(e) =>
-                        setGapRequest({ ...gapRequest, owner: e.target.value })
-                      }
-                    />
-                  </label>
+                  <OwnerPicker label="Remediation owner" value={gapRequest.owner}
+                    onChange={(owner) => setGapRequest({ ...gapRequest, owner })} />
                   <label>
                     Target date
                     <input

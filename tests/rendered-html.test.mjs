@@ -82,7 +82,7 @@ test("keeps the MVP accessible, functional and brand-aligned", async () => {
   assert.match(page, /execution records, DTPs, evidence and audit history are not\s+deleted or replaced/);
   assert.match(page, /Recent ownership activity/);
   assert.match(page, /Request reassignment/);
-  assert.match(page, /responsibility handover/);
+  assert.match(page, /I confirm that I have handed over control responsibilities and trained the new control owner/);
   assert.match(page, /Gap remediation/);
   assert.match(page, /Controller closure approval/);
   assert.match(page, /Controller correction saved/);
