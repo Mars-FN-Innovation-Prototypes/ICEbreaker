@@ -1,5 +1,9 @@
 # ICEbreaker — Digitalized Controls Hub
 
+> **Frozen historical prototype — 12 October 2026.** This repository is retained read-only for reference. All ongoing application development, testing and releases have moved to the private [ICEbreaker enterprise repository](https://github.com/Mars-FN-Innovation-Prototypes/ICEbreaker-enterprise). Access requires organization permission.
+>
+> The existing GitHub Pages site is an old browser-local demonstration, not the enterprise application or a production environment. Do not enter sensitive information or use it for authoritative control records. Historical architecture and feature descriptions below are not the current enterprise design. No further prototype updates are planned.
+
 ICEbreaker is a scalable controls workspace for Mars Food & Nutrition. The first MVP pilot focuses on Europe inventory controls and Control Owners/Reviewers, while the information model and navigation are designed to support additional regions and control families.
 
 ## Phase 1 capabilities
